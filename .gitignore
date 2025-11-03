@@ -1,0 +1,46 @@
+# --- Virtual environments ---
+.venv/
+venv/
+ENV/
+env/
+bikeEnv/  
+*.env
+
+# --- Python cache files ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Build / packaging ---
+build/
+dist/
+*.egg-info/
+*.egg
+
+# --- Logs / temp files ---
+*.log
+*.tmp
+*.temp
+
+# --- IDE / Editor settings ---
+.vscode/
+.idea/
+*.iml
+
+# --- OS generated files ---
+.DS_Store
+Thumbs.db
+
+# --- Jupyter checkpoints ---
+.ipynb_checkpoints/
+
+# --- Test & coverage artifacts ---
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# --- Type checker caches ---
+.mypy_cache/
+.pyre/
+.pytype/
