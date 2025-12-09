@@ -38,6 +38,7 @@ pip install opencv-python==4.9.0.80
 pip install opencv-python-headless==4.9.0.80
 pip install pandas
 pip install ultralytics
+pip install huggingface_hub
 
 echo ""
 echo "Step 4: Installing sam3 package..."
