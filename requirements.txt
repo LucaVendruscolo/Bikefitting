@@ -1,4 +1,18 @@
-numpy
+# BikeFitting Dependencies
+# NOTE: For easy installation, use: ./install.sh
+# This ensures PyTorch is installed from the correct wheel with CUDA support.
+# this script was made with Claude Optus 4.5 assistance 
+
+# PyTorch ecosystem (install via install.sh for proper CUDA wheels)
+torch==2.5.1
+torchvision==0.20.1
+xformers==0.0.29.post1
+
+# Core dependencies
+numpy==1.26.0
 pandas
 ultralytics
-opencv-python
+
+# OpenCV (pinned for numpy 1.26 compatibility)
+opencv-python==4.9.0.80
+opencv-python-headless==4.9.0.80
