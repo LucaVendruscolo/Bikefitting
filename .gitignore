@@ -44,3 +44,18 @@ htmlcov/
 .mypy_cache/
 .pyre/
 .pytype/
+
+# --- BikeDataset generated files ---
+# Generated dataset outputs
+BikeDataset/synchronized_dataset.csv
+BikeDataset/frames/
+BikeDataset/*_output/
+BikeDataset/dataset_output/
+BikeDataset/*.zip
+
+# User-specific sync configurations
+BikeDataset/sync_configs.json
+
+BikeDataset/Training_Videos/
+BikeDataset/Training_Videos/
+BikeDataset/Runs/
