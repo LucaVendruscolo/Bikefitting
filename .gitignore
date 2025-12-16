@@ -45,17 +45,54 @@ htmlcov/
 .pyre/
 .pytype/
 
-# --- BikeDataset generated files ---
+# --- create_labeled_dataset generated files ---
 # Generated dataset outputs
-BikeDataset/synchronized_dataset.csv
-BikeDataset/frames/
-BikeDataset/*_output/
-BikeDataset/dataset_output/
-BikeDataset/*.zip
+create_labeled_dataset/output/
+create_labeled_dataset/frames/
+create_labeled_dataset/synchronized_dataset.csv
+create_labeled_dataset/*_output/
+create_labeled_dataset/dataset_output/
+create_labeled_dataset/*.zip
 
 # User-specific sync configurations
-BikeDataset/sync_configs.json
+create_labeled_dataset/sync_configs.json
 
-BikeDataset/Training_Videos/
-BikeDataset/Training_Videos/
-BikeDataset/Runs/
+create_labeled_dataset/videos/
+create_labeled_dataset/imu_runs/
+create_labeled_dataset/Training_Videos/
+create_labeled_dataset/Runs/
+
+# --- Training pipeline outputs ---
+# Trained models and checkpoints
+train_bike_angle_detection/runs/
+train_bike_angle_detection/*.pt
+train_bike_angle_detection/demo_*.mp4
+
+# Temporary dataset splits
+create_labeled_dataset/train_split.csv
+create_labeled_dataset/val_split.csv
+
+# Backwards-compat (old folder name)
+BikeDataset/
+
+# --- bike_angle_detection_model outputs / data (large) ---
+bike_angle_detection_model/data/
+bike_angle_detection_model/models/
+bike_angle_detection_model/predictions.csv
+
+# --- joint_angle_detection weights (can be re-downloaded) ---
+joint_angle_detection/models/
+
+# --- Large media / weights (generic) ---
+*.pt
+*.pth
+*.onnx
+*.engine
+*.mov
+*.mp4
+*.avi
+*.mkv
+*.MOV
+*.MP4
+*.AVI
+*.MKV

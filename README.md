@@ -1,59 +1,48 @@
-# Bikefitting
-MVP project
+Bikefitting
 
-## Requirements
+Folders
 
-- **Python 3.8 or newer**
-- **CUDA 12.4** (for GPU acceleration)
+- `create_labeled_dataset/`  
+  GUI tool to sync videos + IMU runs and export a labeled dataset (`output/synchronized_dataset.csv` + `output/frames/`).
+- `bike_angle_detection_model/`  
+  Trains and runs the bike angle model (mask bikes with YOLO segmentation, then train classifier).
+- `joint_angle_detection/`  
+  Live webcam joint detection + basic joint angles using YOLOv8 pose.
+- `sam3/`  
+  External package (installed editable).
 
-## Installation
+Setup
 
-### Option 1: Quick Install (Recommended)
+You need Python 3.8+ (GPU is optional).
 
-Use the provided installation script which handles all dependencies including PyTorch CUDA wheels:
+Mac/Linux (uses install.sh)
 
 ```bash
-# Create and activate a conda environment (recommended)
 conda create -n bikefitting python=3.12
 conda activate bikefitting
-
-# Run the installation script
 ./install.sh
 ```
 
-### Option 2: Manual Installation
-
-1. Create and activate a virtual environment:
-
-   **Windows:**
-   ```bash
-   python -m venv bikeEnv
-   bikeEnv\Scripts\activate
-   ```
-
-   **Mac/Linux:**
-   ```bash
-   python -m venv bikeEnv
-   source bikeEnv/bin/activate
-   ```
-
-2. Install PyTorch with CUDA support:
-   ```bash
-   pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu124
-   ```
-
-3. Install remaining requirements:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. Install the sam3 package:
-   ```bash
-   pip install -e ./sam3
-   ```
-
-## Verify Installation
+CPU-only install.sh:
 
 ```bash
-python -c "import torch; print(f'PyTorch: {torch.__version__}, CUDA available: {torch.cuda.is_available()}')"
+BIKEFITTING_CPU_ONLY=1 ./install.sh
+```
+
+Windows (manual)
+
+```bash
+python -m venv bikeEnv
+bikeEnv\Scripts\activate
+python -m pip install --upgrade pip
+python -m pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu124
+python -m pip install -r requirements.txt
+python -m pip install -e .\sam3 
+```
+
+Quick start
+
+- Build dataset: read `create_labeled_dataset/README.md`
+- Train bike angle: read `bike_angle_detection_model/README.md`
+- Live joint angles: read `joint_angle_detection/README.md`
 ```
