@@ -28,6 +28,7 @@ export default function PlaybackView({
   const animationRef = useRef<number>(0);
   const lastFrameTimeRef = useRef<number>(0);
   const frameIndexRef = useRef<number>(0);
+  const isPlayingRef = useRef(false);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(startTime);
@@ -72,6 +73,7 @@ export default function PlaybackView({
     }
     
     return () => {
+      isPlayingRef.current = false;
       cancelAnimationFrame(animationRef.current);
     };
   }, [startTime]);
@@ -127,14 +129,15 @@ export default function PlaybackView({
   }, [frames, detectedSide]);
 
   // Animation loop for playback - step through frames at specified FPS
-  const playbackLoop = useCallback((timestamp: number) => {
-    if (!isPlaying) return;
+  const playbackLoop = useCallback(() => {
+    if (!isPlayingRef.current) return;
     
-    const elapsed = timestamp - lastFrameTimeRef.current;
+    const now = performance.now();
+    const elapsed = now - lastFrameTimeRef.current;
     
     // Only advance frame if enough time has passed
     if (elapsed >= frameInterval) {
-      lastFrameTimeRef.current = timestamp;
+      lastFrameTimeRef.current = now;
       
       // Move to next frame
       frameIndexRef.current++;
@@ -142,17 +145,17 @@ export default function PlaybackView({
         frameIndexRef.current = 0; // Loop back to start
       }
       
-      // Seek video to frame time
+      // Seek video to frame time and render
       const video = videoRef.current;
       if (video && frames[frameIndexRef.current]) {
         video.currentTime = frames[frameIndexRef.current].time;
+        // Small delay to let video seek, then render
+        setTimeout(renderFrame, 10);
       }
-      
-      renderFrame();
     }
     
     animationRef.current = requestAnimationFrame(playbackLoop);
-  }, [isPlaying, frameInterval, frames, renderFrame]);
+  }, [frameInterval, frames, renderFrame]);
 
   // Draw skeleton on canvas
   const drawSkeleton = (ctx: CanvasRenderingContext2D, keypoints: any[], side: 'left' | 'right') => {
@@ -216,17 +219,19 @@ export default function PlaybackView({
 
   // Play/Pause toggle
   const togglePlayback = useCallback(() => {
-    if (isPlaying) {
+    if (isPlayingRef.current) {
       // Pause
+      isPlayingRef.current = false;
       setIsPlaying(false);
       cancelAnimationFrame(animationRef.current);
     } else {
       // Play
+      isPlayingRef.current = true;
       setIsPlaying(true);
       lastFrameTimeRef.current = performance.now();
       animationRef.current = requestAnimationFrame(playbackLoop);
     }
-  }, [isPlaying, playbackLoop]);
+  }, [playbackLoop]);
 
   // Seek to time
   const seekTo = useCallback((time: number) => {

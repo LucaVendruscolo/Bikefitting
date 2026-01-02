@@ -192,10 +192,13 @@ export default function ProcessingView({
           </div>
 
           {/* Progress bar */}
-          {isProcessing && (
+          {isProcessing && totalFrames > 0 && (
             <div className="px-6 py-4">
               <div className="progress-track">
-                <div className="progress-fill" style={{ width: `${progress}%` }} />
+                <div 
+                  className="progress-fill" 
+                  style={{ width: `${Math.round((currentFrame / totalFrames) * 100)}%` }} 
+                />
               </div>
             </div>
           )}
