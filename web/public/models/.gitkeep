@@ -1,3 +1,0 @@
-# This folder contains ONNX models for client-side inference
-# Run `python convert_models.py` to generate them
-
