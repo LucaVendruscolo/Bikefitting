@@ -8,7 +8,7 @@ interface ProcessingViewProps {
   videoUrl: string;
   isProcessing: boolean;
   onStartProcessing: () => void;
-  onProcessingComplete: (frames: FrameData[], start: number, end: number) => void;
+  onProcessingComplete: (frames: FrameData[], start: number, end: number, fps: number) => void;
   onReset: () => void;
 }
 
@@ -133,7 +133,7 @@ export default function ProcessingView({
       setProgress(((i + 1) / framesToProcess) * 100);
     }
 
-    onProcessingComplete(frames, startTime, endTime);
+    onProcessingComplete(frames, startTime, endTime, fps);
   }, [modelState, startTime, endTime, fps, onStartProcessing, onProcessingComplete]);
 
   // Stop processing

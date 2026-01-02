@@ -9,6 +9,7 @@ interface PlaybackViewProps {
   frames: FrameData[];
   startTime: number;
   endTime: number;
+  fps: number;
   onReprocess: () => void;
   onReset: () => void;
 }
@@ -18,15 +19,19 @@ export default function PlaybackView({
   frames,
   startTime,
   endTime,
+  fps,
   onReprocess,
   onReset,
 }: PlaybackViewProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationRef = useRef<number>(0);
+  const lastFrameTimeRef = useRef<number>(0);
+  const frameIndexRef = useRef<number>(0);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(startTime);
+  const frameInterval = 1000 / fps; // ms between frames
   const [detectedSide, setDetectedSide] = useState<'left' | 'right'>('right');
   const [currentAngles, setCurrentAngles] = useState<CurrentAngles>({
     knee: null,
@@ -93,7 +98,7 @@ export default function PlaybackView({
   const renderFrame = useCallback(() => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    if (!video || !canvas) return;
+    if (!video || !canvas || frames.length === 0) return;
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
@@ -101,8 +106,8 @@ export default function PlaybackView({
     // Draw video frame
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    // Get frame data
-    const frameData = getFrameData(video.currentTime);
+    // Get frame data for current frame index
+    const frameData = frames[frameIndexRef.current] || frames[0];
     if (!frameData) return;
 
     // Draw skeleton
@@ -118,22 +123,36 @@ export default function PlaybackView({
       bike: frameData.bikeAngle,
     });
 
-    setCurrentTime(video.currentTime);
-  }, [getFrameData, detectedSide]);
+    setCurrentTime(frameData.time);
+  }, [frames, detectedSide]);
 
-  // Animation loop for playback
-  const playbackLoop = useCallback(() => {
-    const video = videoRef.current;
-    if (!video || video.paused) return;
-
-    // Check if we've reached the end of processed section
-    if (video.currentTime >= endTime) {
-      video.currentTime = startTime;
+  // Animation loop for playback - step through frames at specified FPS
+  const playbackLoop = useCallback((timestamp: number) => {
+    if (!isPlaying) return;
+    
+    const elapsed = timestamp - lastFrameTimeRef.current;
+    
+    // Only advance frame if enough time has passed
+    if (elapsed >= frameInterval) {
+      lastFrameTimeRef.current = timestamp;
+      
+      // Move to next frame
+      frameIndexRef.current++;
+      if (frameIndexRef.current >= frames.length) {
+        frameIndexRef.current = 0; // Loop back to start
+      }
+      
+      // Seek video to frame time
+      const video = videoRef.current;
+      if (video && frames[frameIndexRef.current]) {
+        video.currentTime = frames[frameIndexRef.current].time;
+      }
+      
+      renderFrame();
     }
-
-    renderFrame();
+    
     animationRef.current = requestAnimationFrame(playbackLoop);
-  }, [renderFrame, startTime, endTime]);
+  }, [isPlaying, frameInterval, frames, renderFrame]);
 
   // Draw skeleton on canvas
   const drawSkeleton = (ctx: CanvasRenderingContext2D, keypoints: any[], side: 'left' | 'right') => {
@@ -197,35 +216,41 @@ export default function PlaybackView({
 
   // Play/Pause toggle
   const togglePlayback = useCallback(() => {
-    const video = videoRef.current;
-    if (!video) return;
-
-    if (video.paused) {
-      if (video.currentTime >= endTime) {
-        video.currentTime = startTime;
-      }
-      video.play();
-      setIsPlaying(true);
-      animationRef.current = requestAnimationFrame(playbackLoop);
-    } else {
-      video.pause();
+    if (isPlaying) {
+      // Pause
       setIsPlaying(false);
       cancelAnimationFrame(animationRef.current);
+    } else {
+      // Play
+      setIsPlaying(true);
+      lastFrameTimeRef.current = performance.now();
+      animationRef.current = requestAnimationFrame(playbackLoop);
     }
-  }, [playbackLoop, startTime, endTime]);
+  }, [isPlaying, playbackLoop]);
 
   // Seek to time
   const seekTo = useCallback((time: number) => {
     const video = videoRef.current;
-    if (!video) return;
+    if (!video || frames.length === 0) return;
     
-    // Clamp to processed range
-    const clampedTime = Math.max(startTime, Math.min(endTime, time));
-    video.currentTime = clampedTime;
+    // Find closest frame index
+    let closestIdx = 0;
+    let minDiff = Math.abs(time - frames[0].time);
+    for (let i = 1; i < frames.length; i++) {
+      const diff = Math.abs(time - frames[i].time);
+      if (diff < minDiff) {
+        minDiff = diff;
+        closestIdx = i;
+      }
+    }
+    
+    frameIndexRef.current = closestIdx;
+    video.currentTime = frames[closestIdx].time;
+    setCurrentTime(frames[closestIdx].time);
     
     // Render the seeked frame
     setTimeout(renderFrame, 50);
-  }, [startTime, endTime, renderFrame]);
+  }, [frames, renderFrame]);
 
   // Format time
   const formatTime = (seconds: number) => {

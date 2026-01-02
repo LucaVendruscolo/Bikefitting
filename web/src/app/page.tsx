@@ -13,7 +13,7 @@ export default function Home() {
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [processedFrames, setProcessedFrames] = useState<FrameData[]>([]);
-  const [processedRange, setProcessedRange] = useState({ start: 0, end: 0 });
+  const [processedRange, setProcessedRange] = useState({ start: 0, end: 0, fps: 5 });
 
   const handleVideoSelect = useCallback((file: File) => {
     // Clean up previous URL
@@ -25,9 +25,9 @@ export default function Home() {
     setProcessedFrames([]);
   }, [videoUrl]);
 
-  const handleProcessingComplete = useCallback((frames: FrameData[], start: number, end: number) => {
+  const handleProcessingComplete = useCallback((frames: FrameData[], start: number, end: number, fps: number) => {
     setProcessedFrames(frames);
-    setProcessedRange({ start, end });
+    setProcessedRange({ start, end, fps });
     setAppState('playback');
   }, []);
 
@@ -83,6 +83,7 @@ export default function Home() {
             frames={processedFrames}
             startTime={processedRange.start}
             endTime={processedRange.end}
+            fps={processedRange.fps}
             onReprocess={handleReprocess}
             onReset={handleReset}
           />
