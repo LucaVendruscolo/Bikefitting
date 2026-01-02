@@ -93,11 +93,12 @@ def convert_yolo_models():
     """Convert YOLO models to ONNX."""
     from ultralytics import YOLO
     
-    print("Converting YOLOv8m-pose...")
-    pose_model = YOLO("yolov8m-pose.pt")
+    # Use nano pose model for faster web inference (6MB vs 52MB for medium)
+    print("Converting YOLOv8n-pose (nano - fast)...")
+    pose_model = YOLO("yolov8n-pose.pt")
     pose_model.export(format="onnx", imgsz=640, simplify=True)
-    shutil.move("yolov8m-pose.onnx", MODELS_DIR / "yolov8m-pose.onnx")
-    print(f"  Saved: {MODELS_DIR / 'yolov8m-pose.onnx'}")
+    shutil.move("yolov8n-pose.onnx", MODELS_DIR / "yolov8n-pose.onnx")
+    print(f"  Saved: {MODELS_DIR / 'yolov8n-pose.onnx'}")
     
     print("Converting YOLOv8n-seg...")
     seg_model = YOLO("yolov8n-seg.pt")

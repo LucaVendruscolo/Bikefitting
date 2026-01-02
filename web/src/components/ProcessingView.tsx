@@ -279,7 +279,7 @@ export default function ProcessingView({
                   {/* Pose Model */}
                   <div className="glass-light rounded-lg p-2">
                     <div className="flex justify-between text-white/60 mb-1">
-                      <span>Pose (YOLOv8m)</span>
+                      <span>Pose (YOLOv8n)</span>
                       <span className="text-cyan-400 font-mono">
                         {formatMs(avgMetrics.avgPosePreprocess + avgMetrics.avgPoseInference + avgMetrics.avgPosePostprocess)}
                       </span>

@@ -13,7 +13,7 @@ import { FrameData, Keypoint, Skeleton, JointAngles, FrameMetrics } from './type
 // Model URLs - loaded from GitHub LFS
 const GITHUB_LFS_BASE = 'https://media.githubusercontent.com/media/LucaVendruscolo/Bikefitting/main/web/public/models';
 const MODEL_URLS = {
-  pose: `${GITHUB_LFS_BASE}/yolov8m-pose.onnx`,
+  pose: `${GITHUB_LFS_BASE}/yolov8n-pose.onnx`,  // nano for faster web inference
   seg: `${GITHUB_LFS_BASE}/yolov8n-seg.onnx`,
   angle: `${GITHUB_LFS_BASE}/bike_angle.onnx`,
 };
