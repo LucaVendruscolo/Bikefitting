@@ -2,7 +2,7 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { modelManager, processVideo, processFrame, type FrameResult } from '@/lib/inference';
+import { modelManager, processVideo, type FrameResult } from '@/lib/inference';
 
 // Types
 interface ProcessingMetrics {
@@ -32,6 +32,7 @@ export default function HomePage() {
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [modelLoadingStatus, setModelLoadingStatus] = useState('');
   const [modelLoadingProgress, setModelLoadingProgress] = useState(0);
+  const [modelErrors, setModelErrors] = useState<string[]>([]);
   
   // Processing state
   const [isProcessing, setIsProcessing] = useState(false);
@@ -59,14 +60,26 @@ export default function HomePage() {
   useEffect(() => {
     const loadModels = async () => {
       try {
+        console.log('[App] Starting model load...');
         await modelManager.loadModels((status, progress) => {
           setModelLoadingStatus(status);
           setModelLoadingProgress(progress);
+          console.log('[App] Model load progress:', progress, status);
         });
+        
+        const errors = modelManager.getLoadErrors();
+        setModelErrors(errors);
+        
+        if (errors.length > 0) {
+          console.warn('[App] Model load errors:', errors);
+        }
+        
         setModelsLoaded(true);
+        console.log('[App] Models loaded! Pose:', !!modelManager.getPoseSession(), 'BikeAngle:', !!modelManager.getBikeAngleSession());
       } catch (error) {
-        console.error('Failed to load models:', error);
-        setModelLoadingStatus('Failed to load models. Please refresh.');
+        console.error('[App] Failed to load models:', error);
+        setModelLoadingStatus(`Failed: ${error}`);
+        setModelErrors([`${error}`]);
       }
     };
     loadModels();
@@ -237,6 +250,7 @@ export default function HomePage() {
   };
 
   const hasResults = processedFrames.length > 0;
+  const hasModelErrors = modelErrors.length > 0;
 
   return (
     <div className="min-h-screen">
@@ -252,6 +266,8 @@ export default function HomePage() {
               <span className="loading-spinner" />
               {modelLoadingStatus || 'Loading models...'}
             </div>
+          ) : hasModelErrors ? (
+            <div className="text-warning text-sm">⚠️ Some models failed</div>
           ) : (
             <div className="text-accent text-sm">✓ Models ready</div>
           )}
@@ -280,6 +296,9 @@ export default function HomePage() {
               <p className="text-muted text-sm mt-2">
                 Models run locally in your browser for privacy
               </p>
+              <p className="text-muted text-xs mt-4">
+                First load may take a minute (~110MB download)
+              </p>
             </div>
           </motion.div>
         )}
@@ -289,6 +308,23 @@ export default function HomePage() {
       <div className="main-grid">
         {/* Left Column - Video Area */}
         <div className="main-content">
+          {/* Model Error Warning */}
+          {hasModelErrors && (
+            <div className="card" style={{ background: 'rgba(245, 158, 11, 0.1)', borderColor: 'rgba(245, 158, 11, 0.3)' }}>
+              <div className="card-header" style={{ borderBottom: 'none', paddingBottom: 0 }}>
+                <span className="card-title" style={{ color: '#f59e0b' }}>⚠️ Model Loading Issues</span>
+              </div>
+              <div className="text-sm text-muted">
+                {modelErrors.map((err, i) => (
+                  <div key={i} className="mb-2">{err}</div>
+                ))}
+                <div className="mt-2">
+                  Check browser console (F12) for details. Models may not be deployed correctly.
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Upload / Preview / Result */}
           <AnimatePresence mode="wait">
             {!videoUrl ? (

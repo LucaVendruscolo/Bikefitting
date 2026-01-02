@@ -558,6 +558,7 @@ body {
 .text-mono { font-family: var(--font-mono); }
 .text-muted { color: var(--text-muted); }
 .text-accent { color: var(--accent-primary); }
+.text-warning { color: var(--accent-warning); }
 
 .flex { display: flex; }
 .flex-col { flex-direction: column; }
