@@ -408,15 +408,15 @@ function parseSegmentation(results: any, origW: number, origH: number): Uint8Arr
   const numMaskCoeffs = 32;
   const protoH = 160;
   const protoW = 160;
+  const inputSize = 640;
   
   // Find best bike detection (class 1=bicycle, 3=motorcycle)
   let bestIdx = -1;
-  let bestConf = 0.3; // minimum threshold
+  let bestConf = 0.3;
   
   for (let i = 0; i < numDetections; i++) {
-    // Class scores start at index 4 (after cx, cy, w, h)
-    const bikeScore = output0[(4 + 1) * numDetections + i]; // class 1 (bicycle)
-    const motoScore = output0[(4 + 3) * numDetections + i]; // class 3 (motorcycle)
+    const bikeScore = output0[(4 + 1) * numDetections + i];
+    const motoScore = output0[(4 + 3) * numDetections + i];
     const score = Math.max(bikeScore, motoScore);
     
     if (score > bestConf) {
@@ -427,71 +427,74 @@ function parseSegmentation(results: any, origW: number, origH: number): Uint8Arr
   
   if (bestIdx === -1) return null;
   
-  // Get bounding box for this detection
-  const cx = output0[0 * numDetections + bestIdx];
-  const cy = output0[1 * numDetections + bestIdx];
-  const w = output0[2 * numDetections + bestIdx];
-  const h = output0[3 * numDetections + bestIdx];
-  
-  // Get mask coefficients (last 32 values per detection)
+  // Get mask coefficients
   const maskCoeffs = new Float32Array(numMaskCoeffs);
   for (let j = 0; j < numMaskCoeffs; j++) {
     maskCoeffs[j] = output0[(4 + numClasses + j) * numDetections + bestIdx];
   }
   
-  // Matrix multiply: coeffs [32] @ protos [32, 160*160] -> [160*160]
-  const maskFlat = new Float32Array(protoH * protoW);
+  // Matrix multiply: coeffs @ protos -> 160x160 mask
+  const protoMask = new Float32Array(protoH * protoW);
   for (let p = 0; p < protoH * protoW; p++) {
     let sum = 0;
     for (let c = 0; c < numMaskCoeffs; c++) {
       sum += maskCoeffs[c] * output1[c * protoH * protoW + p];
     }
-    // Sigmoid activation
-    maskFlat[p] = 1 / (1 + Math.exp(-sum));
+    protoMask[p] = 1 / (1 + Math.exp(-sum)); // sigmoid
   }
   
-  // Scale factor from 640 input to prototype size (160)
-  const inputSize = 640;
+  // Letterbox parameters
   const scale = Math.min(inputSize / origW, inputSize / origH);
-  const scaledW = Math.round(origW * scale);
-  const scaledH = Math.round(origH * scale);
-  const offsetX = (inputSize - scaledW) / 2;
-  const offsetY = (inputSize - scaledH) / 2;
+  const newW = Math.round(origW * scale);
+  const newH = Math.round(origH * scale);
+  const padX = (inputSize - newW) / 2;
+  const padY = (inputSize - newH) / 2;
   
-  // Convert box coords from input space (640) to proto space (160)
+  // Proto scale (160 = 640/4)
   const protoScale = protoW / inputSize;
-  const boxX1 = Math.max(0, Math.floor((cx - w/2) * protoScale));
-  const boxY1 = Math.max(0, Math.floor((cy - h/2) * protoScale));
-  const boxX2 = Math.min(protoW, Math.ceil((cx + w/2) * protoScale));
-  const boxY2 = Math.min(protoH, Math.ceil((cy + h/2) * protoScale));
   
-  // Create full-size mask
+  // Crop proto mask to remove letterbox padding, then resize to original image
+  // Calculate the region in proto space that corresponds to actual image (not padding)
+  const protoX1 = Math.floor(padX * protoScale);
+  const protoY1 = Math.floor(padY * protoScale);
+  const protoX2 = Math.ceil((padX + newW) * protoScale);
+  const protoY2 = Math.ceil((padY + newH) * protoScale);
+  const cropW = protoX2 - protoX1;
+  const cropH = protoY2 - protoY1;
+  
+  // Create the final mask by properly resizing
   const mask = new Uint8Array(origW * origH);
   
-  // Map proto mask to original image coordinates
-  for (let py = boxY1; py < boxY2; py++) {
-    for (let px = boxX1; px < boxX2; px++) {
-      const maskVal = maskFlat[py * protoW + px];
-      if (maskVal > 0.5) {
-        // Convert proto coord to input space
-        const inputX = px / protoScale;
-        const inputY = py / protoScale;
-        
-        // Convert input space to original image space
-        const origX = Math.round((inputX - offsetX) / scale);
-        const origY = Math.round((inputY - offsetY) / scale);
-        
-        if (origX >= 0 && origX < origW && origY >= 0 && origY < origH) {
-          mask[origY * origW + origX] = 255;
-        }
+  // For each pixel in output mask, sample from proto mask
+  for (let y = 0; y < origH; y++) {
+    for (let x = 0; x < origW; x++) {
+      // Map original coords to proto coords (accounting for letterbox)
+      const protoX = protoX1 + (x / origW) * cropW;
+      const protoY = protoY1 + (y / origH) * cropH;
+      
+      // Bilinear interpolation for smoother mask
+      const px0 = Math.floor(protoX);
+      const py0 = Math.floor(protoY);
+      const px1 = Math.min(px0 + 1, protoW - 1);
+      const py1 = Math.min(py0 + 1, protoH - 1);
+      const fx = protoX - px0;
+      const fy = protoY - py0;
+      
+      const v00 = protoMask[py0 * protoW + px0];
+      const v10 = protoMask[py0 * protoW + px1];
+      const v01 = protoMask[py1 * protoW + px0];
+      const v11 = protoMask[py1 * protoW + px1];
+      
+      const val = v00 * (1-fx) * (1-fy) + v10 * fx * (1-fy) + v01 * (1-fx) * fy + v11 * fx * fy;
+      
+      if (val > 0.5) {
+        mask[y * origW + x] = 255;
       }
     }
   }
   
-  // Dilate mask slightly (5 pixel equivalent)
-  const dilatedMask = dilateMask(mask, origW, origH, 5);
-  
-  return dilatedMask;
+  // Dilate mask (5 pixels like Python)
+  return dilateMask(mask, origW, origH, 5);
 }
 
 /**
