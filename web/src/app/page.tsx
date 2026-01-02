@@ -2,38 +2,19 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { modelManager, processVideo, processFrame, type FrameResult } from '@/lib/inference';
 
 // Types
 interface ProcessingMetrics {
   totalFrames: number;
   processedFrames: number;
   avgTimePerFrame: number;
-  segmentationTime: number;
-  poseDetectionTime: number;
-  bikeAngleTime: number;
   totalTime: number;
 }
 
-interface FrameData {
+interface FrameData extends FrameResult {
   frameIndex: number;
   timestamp: number;
-  jointAngles: {
-    knee: number | null;
-    hip: number | null;
-    elbow: number | null;
-  };
-  bikeAngle: number | null;
-  bikeConfidence: number | null;
-  detectedSide: 'left' | 'right' | null;
-}
-
-interface ProcessedVideo {
-  videoUrl: string;
-  frames: FrameData[];
-  startFrame: number;
-  endFrame: number;
-  fps: number;
-  metrics: ProcessingMetrics;
 }
 
 export default function HomePage() {
@@ -41,12 +22,16 @@ export default function HomePage() {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [videoDuration, setVideoDuration] = useState(0);
-  const [videoFps, setVideoFps] = useState(30);
   
   // Selection state
   const [startTime, setStartTime] = useState(0);
   const [endTime, setEndTime] = useState(0);
-  const [outputFps, setOutputFps] = useState(10);
+  const [outputFps, setOutputFps] = useState(4);
+  
+  // Model loading state
+  const [modelsLoaded, setModelsLoaded] = useState(false);
+  const [modelLoadingStatus, setModelLoadingStatus] = useState('');
+  const [modelLoadingProgress, setModelLoadingProgress] = useState(0);
   
   // Processing state
   const [isProcessing, setIsProcessing] = useState(false);
@@ -55,18 +40,37 @@ export default function HomePage() {
   const [processingStatus, setProcessingStatus] = useState('');
   
   // Result state
-  const [processedVideo, setProcessedVideo] = useState<ProcessedVideo | null>(null);
+  const [processedFrames, setProcessedFrames] = useState<FrameData[]>([]);
   const [currentFrameData, setCurrentFrameData] = useState<FrameData | null>(null);
+  const [metrics, setMetrics] = useState<ProcessingMetrics | null>(null);
   
   // Player state
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
+  const [playbackFrame, setPlaybackFrame] = useState(0);
   
   // Refs
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const previewVideoRef = useRef<HTMLVideoElement>(null);
-  const resultVideoRef = useRef<HTMLVideoElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const playbackIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+
+  // Load models on mount
+  useEffect(() => {
+    const loadModels = async () => {
+      try {
+        await modelManager.loadModels((status, progress) => {
+          setModelLoadingStatus(status);
+          setModelLoadingProgress(progress);
+        });
+        setModelsLoaded(true);
+      } catch (error) {
+        console.error('Failed to load models:', error);
+        setModelLoadingStatus('Failed to load models. Please refresh.');
+      }
+    };
+    loadModels();
+  }, []);
 
   // Handle file upload
   const handleFileSelect = useCallback((file: File) => {
@@ -78,15 +82,17 @@ export default function HomePage() {
     setUploadedFile(file);
     const url = URL.createObjectURL(file);
     setVideoUrl(url);
-    setProcessedVideo(null);
+    setProcessedFrames([]);
+    setCurrentFrameData(null);
+    setMetrics(null);
   }, []);
 
   // Handle video metadata load
   const handleVideoLoad = useCallback(() => {
-    if (previewVideoRef.current) {
-      const duration = previewVideoRef.current.duration;
+    if (videoRef.current) {
+      const duration = videoRef.current.duration;
       setVideoDuration(duration);
-      setEndTime(Math.min(duration, 30)); // Default to 30 seconds or video length
+      setEndTime(Math.min(duration, 30));
     }
   }, []);
 
@@ -110,70 +116,49 @@ export default function HomePage() {
 
   // Process video
   const handleProcess = async () => {
-    if (!uploadedFile) return;
+    if (!uploadedFile || !videoRef.current) return;
     
     setIsProcessing(true);
     setProcessingProgress(0);
     setCurrentProcessingFrame(0);
-    setProcessingStatus('Uploading video...');
+    setProcessingStatus('Initializing...');
+    setProcessedFrames([]);
+    
+    const startTimestamp = performance.now();
+    const frames: FrameData[] = [];
     
     try {
-      // Create form data
-      const formData = new FormData();
-      formData.append('video', uploadedFile);
-      formData.append('start_time', startTime.toString());
-      formData.append('end_time', endTime.toString());
-      formData.append('output_fps', outputFps.toString());
-      
-      // Start processing
-      const response = await fetch('/api/process', {
-        method: 'POST',
-        body: formData,
+      await processVideo(videoRef.current, {
+        startTime,
+        endTime,
+        outputFps,
+        onProgress: (progress, currentFrame, status) => {
+          setProcessingProgress(progress);
+          setCurrentProcessingFrame(currentFrame);
+          setProcessingStatus(status);
+        },
+        onFrame: (frameIndex, result) => {
+          const frameData: FrameData = {
+            ...result,
+            frameIndex,
+            timestamp: startTime + frameIndex / outputFps,
+          };
+          frames.push(frameData);
+          setProcessedFrames([...frames]);
+        },
       });
       
-      if (!response.ok) {
-        throw new Error('Processing failed');
-      }
+      const totalTime = performance.now() - startTimestamp;
+      setMetrics({
+        totalFrames: frames.length,
+        processedFrames: frames.length,
+        avgTimePerFrame: totalTime / frames.length,
+        totalTime,
+      });
       
-      // Read streaming response for progress
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-      
-      let result: ProcessedVideo | null = null;
-      let buffer = '';
-      
-      while (reader) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || ''; // Keep incomplete line in buffer
-        
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const data = JSON.parse(line);
-            
-            if (data.type === 'progress') {
-              setProcessingProgress(data.progress);
-              setCurrentProcessingFrame(data.currentFrame);
-              setProcessingStatus(data.status);
-            } else if (data.type === 'complete') {
-              result = data.result;
-            } else if (data.type === 'error') {
-              throw new Error(data.message);
-            }
-          } catch {
-            // Ignore parse errors for partial data
-          }
-        }
-      }
-      
-      if (result) {
-        setProcessedVideo(result);
-        setProcessingStatus('Processing complete!');
-      }
+      setProcessingStatus('Processing complete!');
+      setPlaybackFrame(0);
+      setCurrentFrameData(frames[0] || null);
       
     } catch (error) {
       console.error('Processing error:', error);
@@ -183,22 +168,66 @@ export default function HomePage() {
     }
   };
 
-  // Update current frame data based on video time
-  useEffect(() => {
-    if (processedVideo && resultVideoRef.current) {
-      const video = resultVideoRef.current;
-      const frameIndex = Math.floor(currentTime * processedVideo.fps);
-      const frameData = processedVideo.frames.find(f => f.frameIndex === frameIndex);
-      setCurrentFrameData(frameData || null);
+  // Playback controls
+  const togglePlay = useCallback(() => {
+    if (processedFrames.length === 0) return;
+    
+    if (isPlaying) {
+      if (playbackIntervalRef.current) {
+        clearInterval(playbackIntervalRef.current);
+        playbackIntervalRef.current = null;
+      }
+      setIsPlaying(false);
+    } else {
+      setIsPlaying(true);
+      playbackIntervalRef.current = setInterval(() => {
+        setPlaybackFrame((prev) => {
+          const next = prev + 1;
+          if (next >= processedFrames.length) {
+            clearInterval(playbackIntervalRef.current!);
+            playbackIntervalRef.current = null;
+            setIsPlaying(false);
+            return 0;
+          }
+          return next;
+        });
+      }, 1000 / outputFps);
     }
-  }, [currentTime, processedVideo]);
+  }, [isPlaying, processedFrames.length, outputFps]);
 
-  // Video player time update
-  const handleTimeUpdate = useCallback(() => {
-    if (resultVideoRef.current) {
-      setCurrentTime(resultVideoRef.current.currentTime);
+  // Update current frame data when playback frame changes
+  useEffect(() => {
+    if (processedFrames.length > 0 && playbackFrame < processedFrames.length) {
+      const frameData = processedFrames[playbackFrame];
+      setCurrentFrameData(frameData);
+      setCurrentTime(frameData.timestamp);
+      
+      // Sync video position
+      if (videoRef.current) {
+        videoRef.current.currentTime = frameData.timestamp;
+      }
     }
+  }, [playbackFrame, processedFrames]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (playbackIntervalRef.current) {
+        clearInterval(playbackIntervalRef.current);
+      }
+    };
   }, []);
+
+  // Seek to position
+  const handleSeek = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (processedFrames.length === 0) return;
+    
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const percentage = x / rect.width;
+    const frameIndex = Math.floor(percentage * processedFrames.length);
+    setPlaybackFrame(Math.min(frameIndex, processedFrames.length - 1));
+  };
 
   // Format time display
   const formatTime = (seconds: number) => {
@@ -207,28 +236,7 @@ export default function HomePage() {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // Play/Pause toggle
-  const togglePlay = () => {
-    if (resultVideoRef.current) {
-      if (isPlaying) {
-        resultVideoRef.current.pause();
-      } else {
-        resultVideoRef.current.play();
-      }
-      setIsPlaying(!isPlaying);
-    }
-  };
-
-  // Seek to position
-  const handleSeek = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (resultVideoRef.current && processedVideo) {
-      const rect = e.currentTarget.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const percentage = x / rect.width;
-      const duration = processedVideo.frames.length / processedVideo.fps;
-      resultVideoRef.current.currentTime = percentage * duration;
-    }
-  };
+  const hasResults = processedFrames.length > 0;
 
   return (
     <div className="min-h-screen">
@@ -238,8 +246,44 @@ export default function HomePage() {
           <div className="logo-icon">🚴</div>
           <span className="logo-text">BikeFit Pro</span>
         </div>
-        <div className="text-muted text-sm">AI-Powered Bike Fitting Analysis</div>
+        <div className="flex items-center gap-4">
+          {!modelsLoaded ? (
+            <div className="text-muted text-sm flex items-center gap-2">
+              <span className="loading-spinner" />
+              {modelLoadingStatus || 'Loading models...'}
+            </div>
+          ) : (
+            <div className="text-accent text-sm">✓ Models ready</div>
+          )}
+        </div>
       </header>
+
+      {/* Model Loading Overlay */}
+      <AnimatePresence>
+        {!modelsLoaded && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="loading-overlay"
+          >
+            <div className="loading-card">
+              <div className="loading-icon">🧠</div>
+              <h2>Loading AI Models</h2>
+              <p className="text-muted">{modelLoadingStatus}</p>
+              <div className="progress-container mt-4">
+                <div 
+                  className="progress-bar"
+                  style={{ width: `${modelLoadingProgress}%` }}
+                />
+              </div>
+              <p className="text-muted text-sm mt-2">
+                Models run locally in your browser for privacy
+              </p>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Main Content */}
       <div className="main-grid">
@@ -276,70 +320,8 @@ export default function HomePage() {
                   </div>
                 </div>
               </motion.div>
-            ) : processedVideo ? (
-              // Result Video Player
-              <motion.div
-                key="result"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -20 }}
-                className="card"
-              >
-                <div className="card-header">
-                  <div className="card-icon">🎬</div>
-                  <span className="card-title">Analysis Result</span>
-                </div>
-                
-                <div className="video-container">
-                  <video
-                    ref={resultVideoRef}
-                    className="video-player"
-                    src={processedVideo.videoUrl}
-                    onTimeUpdate={handleTimeUpdate}
-                    onEnded={() => setIsPlaying(false)}
-                  />
-                  
-                  {/* Video Controls */}
-                  <div className="video-controls">
-                    {/* Timeline */}
-                    <div className="timeline" onClick={handleSeek}>
-                      <div 
-                        className="timeline-progress"
-                        style={{ 
-                          width: `${(currentTime / (processedVideo.frames.length / processedVideo.fps)) * 100}%` 
-                        }}
-                      >
-                        <div className="timeline-handle" />
-                      </div>
-                    </div>
-                    
-                    {/* Controls Row */}
-                    <div className="controls-row">
-                      <button className="btn btn-icon btn-secondary" onClick={togglePlay}>
-                        {isPlaying ? '⏸️' : '▶️'}
-                      </button>
-                      
-                      <span className="time-display">
-                        {formatTime(currentTime)} / {formatTime(processedVideo.frames.length / processedVideo.fps)}
-                      </span>
-                      
-                      <div className="flex-1" />
-                      
-                      <button 
-                        className="btn btn-secondary"
-                        onClick={() => {
-                          setProcessedVideo(null);
-                          setCurrentFrameData(null);
-                        }}
-                      >
-                        New Video
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </motion.div>
             ) : (
-              // Preview Video
+              // Video Player with Controls
               <motion.div
                 key="preview"
                 initial={{ opacity: 0, y: 20 }}
@@ -348,14 +330,17 @@ export default function HomePage() {
                 className="card"
               >
                 <div className="card-header">
-                  <div className="card-icon">📹</div>
-                  <span className="card-title">Video Preview</span>
+                  <div className="card-icon">{hasResults ? '🎬' : '📹'}</div>
+                  <span className="card-title">{hasResults ? 'Analysis Result' : 'Video Preview'}</span>
                   <div className="flex-1" />
                   <button 
-                    className="btn btn-secondary btn-sm"
+                    className="btn btn-secondary"
                     onClick={() => {
                       setUploadedFile(null);
                       setVideoUrl(null);
+                      setProcessedFrames([]);
+                      setCurrentFrameData(null);
+                      setMetrics(null);
                     }}
                   >
                     Change Video
@@ -364,67 +349,108 @@ export default function HomePage() {
                 
                 <div className="video-container">
                   <video
-                    ref={previewVideoRef}
+                    ref={videoRef}
                     className="video-player"
                     src={videoUrl}
-                    controls
                     onLoadedMetadata={handleVideoLoad}
+                    controls={!hasResults}
+                    muted
                   />
+                  
+                  {/* Custom Controls for Results */}
+                  {hasResults && (
+                    <div className="video-controls">
+                      {/* Timeline */}
+                      <div className="timeline" onClick={handleSeek}>
+                        <div 
+                          className="timeline-progress"
+                          style={{ 
+                            width: `${(playbackFrame / Math.max(1, processedFrames.length - 1)) * 100}%` 
+                          }}
+                        >
+                          <div className="timeline-handle" />
+                        </div>
+                      </div>
+                      
+                      {/* Controls Row */}
+                      <div className="controls-row">
+                        <button className="btn btn-icon btn-secondary" onClick={togglePlay}>
+                          {isPlaying ? '⏸️' : '▶️'}
+                        </button>
+                        
+                        <span className="time-display">
+                          {formatTime(currentTime)} / {formatTime(endTime - startTime)}
+                        </span>
+                        
+                        <span className="text-muted text-sm">
+                          Frame {playbackFrame + 1} / {processedFrames.length}
+                        </span>
+                        
+                        <div className="flex-1" />
+                      </div>
+                    </div>
+                  )}
                 </div>
                 
-                {/* Selection Controls */}
-                <div className="mt-4">
-                  <div className="flex gap-4 mb-4">
-                    <div className="input-group flex-1">
-                      <label className="input-label">Start Time (seconds)</label>
-                      <input
-                        type="number"
-                        className="input"
-                        value={startTime}
-                        min={0}
-                        max={endTime}
-                        step={0.1}
-                        onChange={(e) => setStartTime(parseFloat(e.target.value) || 0)}
-                      />
+                {/* Selection Controls (when not processed) */}
+                {!hasResults && (
+                  <div className="mt-4">
+                    <div className="flex gap-4 mb-4">
+                      <div className="input-group flex-1">
+                        <label className="input-label">Start Time (seconds)</label>
+                        <input
+                          type="number"
+                          className="input"
+                          value={startTime}
+                          min={0}
+                          max={endTime}
+                          step={0.1}
+                          onChange={(e) => setStartTime(parseFloat(e.target.value) || 0)}
+                        />
+                      </div>
+                      <div className="input-group flex-1">
+                        <label className="input-label">End Time (seconds)</label>
+                        <input
+                          type="number"
+                          className="input"
+                          value={endTime}
+                          min={startTime}
+                          max={videoDuration}
+                          step={0.1}
+                          onChange={(e) => setEndTime(parseFloat(e.target.value) || 0)}
+                        />
+                      </div>
+                      <div className="input-group flex-1">
+                        <label className="input-label">Output FPS</label>
+                        <input
+                          type="number"
+                          className="input"
+                          value={outputFps}
+                          min={1}
+                          max={15}
+                          onChange={(e) => setOutputFps(parseInt(e.target.value) || 4)}
+                        />
+                      </div>
                     </div>
-                    <div className="input-group flex-1">
-                      <label className="input-label">End Time (seconds)</label>
-                      <input
-                        type="number"
-                        className="input"
-                        value={endTime}
-                        min={startTime}
-                        max={videoDuration}
-                        step={0.1}
-                        onChange={(e) => setEndTime(parseFloat(e.target.value) || 0)}
-                      />
+                    
+                    <div className="text-muted text-sm mb-4">
+                      Duration: {formatTime(endTime - startTime)} • 
+                      ~{Math.ceil((endTime - startTime) * outputFps)} frames to process
                     </div>
-                    <div className="input-group flex-1">
-                      <label className="input-label">Output FPS</label>
-                      <input
-                        type="number"
-                        className="input"
-                        value={outputFps}
-                        min={1}
-                        max={30}
-                        onChange={(e) => setOutputFps(parseInt(e.target.value) || 10)}
-                      />
-                    </div>
+                    
+                    <button
+                      className="btn btn-primary w-full"
+                      onClick={handleProcess}
+                      disabled={isProcessing || !modelsLoaded}
+                    >
+                      {!modelsLoaded 
+                        ? 'Loading models...' 
+                        : isProcessing 
+                          ? 'Processing...' 
+                          : 'Start Analysis'}
+                    </button>
                   </div>
-                  
-                  <div className="text-muted text-sm mb-4">
-                    Duration: {formatTime(endTime - startTime)} • 
-                    ~{Math.ceil((endTime - startTime) * outputFps)} frames to process
-                  </div>
-                  
-                  <button
-                    className="btn btn-primary w-full"
-                    onClick={handleProcess}
-                    disabled={isProcessing}
-                  >
-                    {isProcessing ? 'Processing...' : 'Start Analysis'}
-                  </button>
-                </div>
+                )}
               </motion.div>
             )}
           </AnimatePresence>
@@ -461,7 +487,7 @@ export default function HomePage() {
           </AnimatePresence>
 
           {/* Processing Metrics */}
-          {processedVideo?.metrics && (
+          {metrics && (
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
@@ -474,28 +500,20 @@ export default function HomePage() {
               
               <div className="metrics-grid">
                 <div className="metric-item">
-                  <div className="metric-value">{processedVideo.metrics.totalFrames}</div>
+                  <div className="metric-value">{metrics.totalFrames}</div>
                   <div className="metric-label">Total Frames</div>
                 </div>
                 <div className="metric-item">
-                  <div className="metric-value">{processedVideo.metrics.avgTimePerFrame.toFixed(0)}ms</div>
+                  <div className="metric-value">{metrics.avgTimePerFrame.toFixed(0)}ms</div>
                   <div className="metric-label">Avg per Frame</div>
                 </div>
                 <div className="metric-item">
-                  <div className="metric-value">{processedVideo.metrics.segmentationTime.toFixed(0)}ms</div>
-                  <div className="metric-label">Segmentation</div>
-                </div>
-                <div className="metric-item">
-                  <div className="metric-value">{processedVideo.metrics.poseDetectionTime.toFixed(0)}ms</div>
-                  <div className="metric-label">Pose Detection</div>
-                </div>
-                <div className="metric-item">
-                  <div className="metric-value">{processedVideo.metrics.bikeAngleTime.toFixed(0)}ms</div>
-                  <div className="metric-label">Bike Angle</div>
-                </div>
-                <div className="metric-item">
-                  <div className="metric-value">{(processedVideo.metrics.totalTime / 1000).toFixed(1)}s</div>
+                  <div className="metric-value">{(metrics.totalTime / 1000).toFixed(1)}s</div>
                   <div className="metric-label">Total Time</div>
+                </div>
+                <div className="metric-item">
+                  <div className="metric-value">{(1000 / metrics.avgTimePerFrame).toFixed(1)}</div>
+                  <div className="metric-label">FPS</div>
                 </div>
               </div>
             </motion.div>
@@ -605,9 +623,14 @@ export default function HomePage() {
               Seat height and handlebar recommendations coming soon...
             </div>
           </motion.div>
+
+          {/* Client-side notice */}
+          <div className="text-muted text-xs text-center mt-4">
+            🔒 All processing happens locally in your browser.<br/>
+            Your video never leaves your device.
+          </div>
         </div>
       </div>
     </div>
   );
 }
-

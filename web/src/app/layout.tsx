@@ -14,7 +14,7 @@ const firaCode = Fira_Code({
 
 export const metadata: Metadata = {
   title: 'BikeFit Pro | AI-Powered Bike Fitting Analysis',
-  description: 'Analyze your cycling posture with AI-powered joint and bike angle detection',
+  description: 'Analyze your cycling posture with AI-powered joint and bike angle detection - runs entirely in your browser',
 };
 
 export default function RootLayout({
@@ -36,4 +36,3 @@ export default function RootLayout({
     </html>
   );
 }
-
