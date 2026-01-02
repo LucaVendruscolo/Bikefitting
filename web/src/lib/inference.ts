@@ -1,9 +1,7 @@
 /**
  * Client-side inference using ONNX Runtime Web (loaded from CDN)
  * 
- * This module handles all ML inference directly in the browser:
- * - Pose estimation (YOLOv8-pose)  
- * - Bike angle classification (ConvNeXT)
+ * Models are loaded from GitHub Releases to avoid Git LFS issues with Vercel.
  */
 
 // ============= Types =============
@@ -37,6 +35,15 @@ interface BikeAngleConfig {
   };
 }
 
+// ============= Model URLs =============
+// Models hosted on GitHub Releases to avoid Git LFS issues
+const MODEL_BASE_URL = 'https://github.com/LucaVendruscolo/Bikefitting/releases/download/models-v1';
+const MODEL_URLS = {
+  poseModel: `${MODEL_BASE_URL}/yolov8-pose.onnx`,
+  bikeAngleModel: `${MODEL_BASE_URL}/bike_angle.onnx`,
+  bikeAngleConfig: `${MODEL_BASE_URL}/bike_angle_config.json`,
+};
+
 // Global ONNX Runtime reference (loaded from CDN)
 declare global {
   interface Window {
@@ -55,7 +62,7 @@ interface OrtSession {
 
 interface OrtModule {
   InferenceSession: {
-    create(path: string, options?: { executionProviders: string[] }): Promise<OrtSession>;
+    create(path: string | ArrayBuffer, options?: { executionProviders: string[] }): Promise<OrtSession>;
   };
   Tensor: new (type: string, data: Float32Array, dims: number[]) => OrtTensor;
   env: {
@@ -108,7 +115,6 @@ async function loadOrt(): Promise<OrtModule> {
     script.onload = () => {
       if (window.ort) {
         console.log('[ONNX] ONNX Runtime loaded successfully');
-        // Set WASM paths to CDN
         window.ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/';
         resolve(window.ort);
       } else {
@@ -120,6 +126,52 @@ async function loadOrt(): Promise<OrtModule> {
   });
   
   return ortLoadPromise;
+}
+
+// ============= Download Model as ArrayBuffer =============
+
+async function downloadModel(url: string, onProgress?: (loaded: number, total: number) => void): Promise<ArrayBuffer> {
+  console.log('[Download] Fetching:', url);
+  
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to download model: ${response.status} ${response.statusText}`);
+  }
+  
+  const contentLength = response.headers.get('content-length');
+  const total = contentLength ? parseInt(contentLength, 10) : 0;
+  
+  if (!response.body) {
+    // Fallback for browsers without streaming support
+    return await response.arrayBuffer();
+  }
+  
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let loaded = 0;
+  
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    
+    chunks.push(value);
+    loaded += value.length;
+    
+    if (onProgress && total > 0) {
+      onProgress(loaded, total);
+    }
+  }
+  
+  // Combine chunks into single ArrayBuffer
+  const combined = new Uint8Array(loaded);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.length;
+  }
+  
+  console.log('[Download] Complete:', url, 'Size:', (loaded / 1024 / 1024).toFixed(1), 'MB');
+  return combined.buffer;
 }
 
 // ============= Model Manager =============
@@ -154,24 +206,20 @@ class ModelManager {
   }
 
   private async _loadModels(onProgress?: (status: string, progress: number) => void): Promise<void> {
-    const basePath = '/models';
-    
     try {
       // Load ONNX Runtime from CDN
       onProgress?.('Loading ONNX Runtime...', 5);
       this.ort = await loadOrt();
 
       // Load bike angle config
-      onProgress?.('Loading configuration...', 15);
+      onProgress?.('Loading configuration...', 10);
       try {
-        const configResponse = await fetch(`${basePath}/bike_angle_config.json`);
+        const configResponse = await fetch(MODEL_URLS.bikeAngleConfig);
         if (configResponse.ok) {
           this.bikeAngleConfig = await configResponse.json();
           console.log('[Config] Loaded bike angle config:', this.bikeAngleConfig);
         } else {
-          const error = `Config fetch failed: ${configResponse.status}`;
-          console.error('[Config]', error);
-          this.loadErrors.push(error);
+          throw new Error(`Config fetch failed: ${configResponse.status}`);
         }
       } catch (e) {
         const error = `Config error: ${e}`;
@@ -180,24 +228,19 @@ class ModelManager {
       }
 
       // Load pose model
-      onProgress?.('Loading pose detection model (~13MB)...', 30);
+      onProgress?.('Downloading pose model (~13MB)...', 15);
       try {
-        console.log('[Pose] Loading from:', `${basePath}/yolov8-pose.onnx`);
+        const poseBuffer = await downloadModel(MODEL_URLS.poseModel, (loaded, total) => {
+          const pct = 15 + (loaded / total) * 25;
+          onProgress?.(`Downloading pose model... ${(loaded / 1024 / 1024).toFixed(1)}MB`, pct);
+        });
         
-        // First check if the file exists
-        const checkResponse = await fetch(`${basePath}/yolov8-pose.onnx`, { method: 'HEAD' });
-        console.log('[Pose] File check:', checkResponse.status, checkResponse.headers.get('content-type'));
-        
-        if (!checkResponse.ok) {
-          throw new Error(`Pose model not found: ${checkResponse.status}`);
-        }
-        
-        this.poseSession = await this.ort.InferenceSession.create(
-          `${basePath}/yolov8-pose.onnx`,
-          { executionProviders: ['wasm'] }
-        );
+        onProgress?.('Loading pose model into memory...', 42);
+        this.poseSession = await this.ort.InferenceSession.create(poseBuffer, {
+          executionProviders: ['wasm']
+        });
         console.log('[Pose] Model loaded successfully!');
-        onProgress?.('Pose model loaded!', 60);
+        onProgress?.('Pose model ready!', 45);
       } catch (e) {
         const error = `Pose model error: ${e}`;
         console.error('[Pose]', error);
@@ -205,24 +248,19 @@ class ModelManager {
       }
 
       // Load bike angle model
-      onProgress?.('Loading bike angle model (~97MB)...', 70);
+      onProgress?.('Downloading bike angle model (~97MB)...', 50);
       try {
-        console.log('[BikeAngle] Loading from:', `${basePath}/bike_angle.onnx`);
+        const bikeBuffer = await downloadModel(MODEL_URLS.bikeAngleModel, (loaded, total) => {
+          const pct = 50 + (loaded / total) * 40;
+          onProgress?.(`Downloading bike angle model... ${(loaded / 1024 / 1024).toFixed(1)}MB`, pct);
+        });
         
-        // First check if the file exists
-        const checkResponse = await fetch(`${basePath}/bike_angle.onnx`, { method: 'HEAD' });
-        console.log('[BikeAngle] File check:', checkResponse.status, checkResponse.headers.get('content-type'));
-        
-        if (!checkResponse.ok) {
-          throw new Error(`Bike angle model not found: ${checkResponse.status}`);
-        }
-        
-        this.bikeAngleSession = await this.ort.InferenceSession.create(
-          `${basePath}/bike_angle.onnx`,
-          { executionProviders: ['wasm'] }
-        );
+        onProgress?.('Loading bike angle model into memory...', 92);
+        this.bikeAngleSession = await this.ort.InferenceSession.create(bikeBuffer, {
+          executionProviders: ['wasm']
+        });
         console.log('[BikeAngle] Model loaded successfully!');
-        onProgress?.('Bike angle model loaded!', 95);
+        onProgress?.('Bike angle model ready!', 95);
       } catch (e) {
         const error = `Bike angle model error: ${e}`;
         console.error('[BikeAngle]', error);
@@ -231,7 +269,7 @@ class ModelManager {
 
       if (this.loadErrors.length > 0) {
         console.warn('[Models] Some models failed to load:', this.loadErrors);
-        onProgress?.(`Loaded with errors: ${this.loadErrors.length} model(s) failed`, 100);
+        onProgress?.(`Loaded with errors`, 100);
       } else {
         onProgress?.('All models loaded!', 100);
       }
@@ -284,13 +322,11 @@ function imageDataToTensor(
   targetSize: number,
   normalize: { mean: number[]; std: number[] }
 ): OrtTensor {
-  // Create canvas to resize
   const canvas = document.createElement('canvas');
   canvas.width = targetSize;
   canvas.height = targetSize;
   const ctx = canvas.getContext('2d')!;
   
-  // Draw and resize
   const tempCanvas = document.createElement('canvas');
   tempCanvas.width = imageData.width;
   tempCanvas.height = imageData.height;
@@ -300,7 +336,6 @@ function imageDataToTensor(
   ctx.drawImage(tempCanvas, 0, 0, targetSize, targetSize);
   const resizedData = ctx.getImageData(0, 0, targetSize, targetSize);
   
-  // Convert to tensor [1, 3, H, W] with normalization
   const tensorData = new Float32Array(3 * targetSize * targetSize);
   
   for (let i = 0; i < targetSize * targetSize; i++) {
@@ -335,7 +370,6 @@ async function detectPose(
   const inputSize = 640;
   const { width, height } = imageData;
   
-  // Prepare input tensor with letterbox
   const canvas = document.createElement('canvas');
   canvas.width = inputSize;
   canvas.height = inputSize;
@@ -359,7 +393,6 @@ async function detectPose(
   
   const resizedData = ctx.getImageData(0, 0, inputSize, inputSize);
   
-  // Convert to tensor [1, 3, 640, 640]
   const tensorData = new Float32Array(3 * inputSize * inputSize);
   for (let i = 0; i < inputSize * inputSize; i++) {
     tensorData[i] = resizedData.data[i * 4] / 255;
@@ -374,14 +407,12 @@ async function detectPose(
     const output = results.output0;
     
     if (!output) {
-      console.warn('[Pose] No output from model');
       return { keypoints: [], side: null };
     }
     
     const data = output.data;
     const numDetections = output.dims[2];
     
-    // Find best detection
     let bestScore = 0;
     let bestIdx = -1;
     
@@ -394,13 +425,9 @@ async function detectPose(
     }
     
     if (bestIdx === -1 || bestScore < 0.3) {
-      console.log('[Pose] No detection above threshold, best score:', bestScore);
       return { keypoints: [], side: null };
     }
     
-    console.log('[Pose] Detection found with score:', bestScore);
-    
-    // Extract keypoints
     const keypoints: Keypoint[] = [];
     for (let k = 0; k < 17; k++) {
       const baseIdx = (5 + k * 3) * numDetections + bestIdx;
@@ -410,7 +437,6 @@ async function detectPose(
       keypoints.push({ x, y, confidence: conf });
     }
     
-    // Determine visible side
     const leftConf = (
       keypoints[COCO_KEYPOINTS.left_shoulder].confidence +
       keypoints[COCO_KEYPOINTS.left_hip].confidence +
@@ -424,7 +450,6 @@ async function detectPose(
     ) / 3;
     
     const side = rightConf > leftConf ? 'right' : 'left';
-    console.log('[Pose] Detected side:', side, 'leftConf:', leftConf.toFixed(2), 'rightConf:', rightConf.toFixed(2));
     
     return { keypoints, side };
   } catch (error) {
@@ -463,14 +488,11 @@ function computeJointAngles(keypoints: Keypoint[], side: 'left' | 'right'): Join
   const knee = keypoints[COCO_KEYPOINTS[`${prefix}knee` as keyof typeof COCO_KEYPOINTS]];
   const ankle = keypoints[COCO_KEYPOINTS[`${prefix}ankle` as keyof typeof COCO_KEYPOINTS]];
   
-  const angles = {
+  return {
     knee: calculateAngle(hip, knee, ankle),
     hip: calculateAngle(shoulder, hip, knee),
     elbow: calculateAngle(shoulder, elbow, wrist),
   };
-  
-  console.log('[Angles] Computed:', angles);
-  return angles;
 }
 
 // ============= Bike Angle Prediction =============
@@ -487,7 +509,6 @@ async function predictBikeAngle(
     const results = await session.run({ input: inputTensor });
     const probs = results.probabilities.data;
     
-    // Circular decoding
     const numBins = config.num_bins;
     const binSize = 360 / numBins;
     
@@ -511,7 +532,6 @@ async function predictBikeAngle(
     const angle = Math.atan2(sinSum, cosSum) * (180 / Math.PI);
     const confidence = maxProb * 100;
     
-    console.log('[BikeAngle] Predicted:', angle.toFixed(1), 'confidence:', confidence.toFixed(1));
     return { angle, confidence };
   } catch (error) {
     console.error('[BikeAngle] Inference error:', error);
@@ -534,7 +554,6 @@ export async function processFrame(
   const maskedBikeData: ImageData | null = null;
   
   if (!ort) {
-    console.warn('[ProcessFrame] ORT not loaded');
     return { jointAngles, bikeAngle, bikeConfidence, detectedSide, maskedBikeData };
   }
   
@@ -546,16 +565,13 @@ export async function processFrame(
     if (keypoints.length > 0 && side) {
       jointAngles = computeJointAngles(keypoints, side);
     }
-  } else {
-    console.warn('[ProcessFrame] Pose session not available');
   }
   
-  // Bike angle prediction (using center crop)
+  // Bike angle prediction
   const bikeAngleSession = modelManager.getBikeAngleSession();
   const config = modelManager.getConfig();
   
   if (bikeAngleSession && config) {
-    // Center crop for bike angle
     const size = config.input_size;
     const canvas = document.createElement('canvas');
     canvas.width = size;
@@ -577,8 +593,6 @@ export async function processFrame(
     const result = await predictBikeAngle(ort, croppedData, bikeAngleSession, config);
     bikeAngle = result.angle;
     bikeConfidence = result.confidence;
-  } else {
-    console.warn('[ProcessFrame] Bike angle session not available, session:', !!bikeAngleSession, 'config:', !!config);
   }
   
   return {
@@ -612,27 +626,15 @@ export async function processVideo(
   
   const results: FrameResult[] = [];
   
-  // Ensure models are loaded
   if (!modelManager.isLoaded()) {
-    console.log('[ProcessVideo] Loading models...');
     await modelManager.loadModels((status, progress) => {
       onProgress(progress * 0.1, 0, status);
     });
   }
   
-  const errors = modelManager.getLoadErrors();
-  if (errors.length > 0) {
-    console.warn('[ProcessVideo] Model load errors:', errors);
-  }
-  
-  console.log('[ProcessVideo] Starting processing of', totalFrames, 'frames');
-  console.log('[ProcessVideo] Pose session:', !!modelManager.getPoseSession());
-  console.log('[ProcessVideo] BikeAngle session:', !!modelManager.getBikeAngleSession());
-  
   for (let i = 0; i < totalFrames; i++) {
     const time = startTime + i * frameInterval;
     
-    // Seek to frame
     video.currentTime = time;
     await new Promise<void>((resolve) => {
       const onSeeked = () => {
@@ -642,16 +644,7 @@ export async function processVideo(
       video.addEventListener('seeked', onSeeked);
     });
     
-    // Process frame
-    const frameStart = performance.now();
     const result = await processFrame(video);
-    const frameTime = performance.now() - frameStart;
-    
-    if (i === 0) {
-      console.log('[ProcessVideo] First frame took', frameTime.toFixed(0), 'ms');
-      console.log('[ProcessVideo] First frame result:', result);
-    }
-    
     results.push(result);
     onFrame(i, result);
     
