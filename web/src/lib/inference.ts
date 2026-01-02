@@ -24,6 +24,9 @@ const BIKE_ANGLE_CONFIG = {
   inputSize: 224,
 };
 
+// DEBUG: Skip segmentation and use center crop to test if issue is in segmentation
+const DEBUG_SKIP_SEGMENTATION = true;
+
 // COCO keypoint indices
 const KEYPOINT_NAMES = [
   'nose', 'left_eye', 'right_eye', 'left_ear', 'right_ear',
@@ -242,37 +245,42 @@ async function runBikeAnglePredictionTimed(
   let bikeMask: Uint8Array | null = null;
   let segPreprocess = 0, segInference = 0, segPostprocess = 0;
   
-  try {
-    const t0 = performance.now();
-    const segInput = preprocessYolo(imageData, 640, ort);
-    segPreprocess = performance.now() - t0;
-    
-    const t1 = performance.now();
-    const segFeeds = { images: segInput };
-    const segResults = await segSession.run(segFeeds);
-    segInference = performance.now() - t1;
-    
-    // Debug: log output names and shapes
-    const outputNames = Object.keys(segResults);
-    console.log('Seg output names:', outputNames);
-    for (const name of outputNames) {
-      const out = segResults[name];
-      console.log(`  ${name}: dims=${out.dims}, size=${out.data?.length}`);
+  // DEBUG: Skip segmentation to test if issue is there
+  if (DEBUG_SKIP_SEGMENTATION) {
+    console.log('DEBUG: Skipping segmentation, using center crop');
+  } else {
+    try {
+      const t0 = performance.now();
+      const segInput = preprocessYolo(imageData, 640, ort);
+      segPreprocess = performance.now() - t0;
+      
+      const t1 = performance.now();
+      const segFeeds = { images: segInput };
+      const segResults = await segSession.run(segFeeds);
+      segInference = performance.now() - t1;
+      
+      // Debug: log output names and shapes
+      const outputNames = Object.keys(segResults);
+      console.log('Seg output names:', outputNames);
+      for (const name of outputNames) {
+        const out = segResults[name];
+        console.log(`  ${name}: dims=${out.dims}, size=${out.data?.length}`);
+      }
+      
+      const t2 = performance.now();
+      bikeMask = parseSegmentation(segResults, width, height);
+      segPostprocess = performance.now() - t2;
+      
+      // Debug: check if mask was created
+      if (bikeMask) {
+        const maskPixels = bikeMask.reduce((sum, v) => sum + (v > 0 ? 1 : 0), 0);
+        console.log(`Bike mask created: ${maskPixels} pixels out of ${width*height}`);
+      } else {
+        console.log('Bike mask is null - no bike detected');
+      }
+    } catch (e) {
+      console.warn('Segmentation failed:', e);
     }
-    
-    const t2 = performance.now();
-    bikeMask = parseSegmentation(segResults, width, height);
-    segPostprocess = performance.now() - t2;
-    
-    // Debug: check if mask was created
-    if (bikeMask) {
-      const maskPixels = bikeMask.reduce((sum, v) => sum + (v > 0 ? 1 : 0), 0);
-      console.log(`Bike mask created: ${maskPixels} pixels out of ${width*height}`);
-    } else {
-      console.log('Bike mask is null - no bike detected');
-    }
-  } catch (e) {
-    console.warn('Segmentation failed:', e);
   }
 
   // 2. Create masked image
@@ -326,8 +334,13 @@ async function runBikeAnglePredictionTimed(
     };
   }
   
-  const angle = binsToAngle(logits);
-  console.log('Predicted angle:', angle);
+  let angle = binsToAngle(logits);
+  
+  // DEBUG: Try negating angle to check if sign is flipped
+  console.log('Raw predicted angle:', angle);
+  angle = -angle;  // Try flipping sign
+  console.log('Negated angle:', angle);
+  
   const anglePostprocess = performance.now() - t6;
   
   return { 
