@@ -126,7 +126,31 @@ def convert_bike_angle_model():
     return True
 
 
-def convert_yolo_models():
+def quantize_onnx_model(model_path: Path, output_path: Path):
+    """Quantize ONNX model to int8 for smaller size and faster inference."""
+    try:
+        from onnxruntime.quantization import quantize_dynamic, QuantType
+        print(f"  Quantizing {model_path.name}...")
+        quantize_dynamic(
+            str(model_path),
+            str(output_path),
+            weight_type=QuantType.QUInt8,
+            optimize_model=True
+        )
+        
+        original_size = model_path.stat().st_size / (1024 * 1024)
+        quantized_size = output_path.stat().st_size / (1024 * 1024)
+        print(f"  Original: {original_size:.1f}MB -> Quantized: {quantized_size:.1f}MB ({100*quantized_size/original_size:.0f}%)")
+        return True
+    except ImportError:
+        print("  WARNING: onnxruntime not installed, skipping quantization")
+        return False
+    except Exception as e:
+        print(f"  WARNING: Quantization failed: {e}")
+        return False
+
+
+def convert_yolo_models(quantize=True):
     """Convert YOLO models to ONNX using ultralytics export."""
     try:
         from ultralytics import YOLO
@@ -134,52 +158,47 @@ def convert_yolo_models():
         print("  ERROR: ultralytics not installed")
         return False
     
-    # Pose model
-    print("Converting YOLOv8 pose model...")
+    # Pose model - use smaller input size (480) for faster inference
+    print("Converting YOLOv8 pose model (optimized for browser)...")
     pose_path = PROJECT_ROOT / "joint_angle_detection" / "models" / "yolov8n-pose.pt"
     if not pose_path.exists():
         pose_path = PROJECT_ROOT / "bike_angle_detection_model" / "yolov8m-pose.pt"
     
     if pose_path.exists():
         model = YOLO(str(pose_path))
-        model.export(format='onnx', imgsz=640, simplify=True)
-        # Move to output folder
+        # Use imgsz=480 for faster browser inference (vs 640)
+        model.export(format='onnx', imgsz=480, simplify=True, dynamic=False)
         exported = pose_path.with_suffix('.onnx')
         if exported.exists():
             target = MODELS_OUTPUT / "yolov8-pose.onnx"
             exported.rename(target)
-            print(f"  Saved to {target}")
+            print(f"  Saved to {target} (size: {target.stat().st_size / (1024*1024):.1f}MB)")
+            
+            # Quantize for smaller size
+            if quantize:
+                quantized_path = MODELS_OUTPUT / "yolov8-pose-quantized.onnx"
+                if quantize_onnx_model(target, quantized_path):
+                    # Replace original with quantized
+                    target.unlink()
+                    quantized_path.rename(target)
     else:
         print("  Downloading and converting yolov8n-pose...")
         model = YOLO("yolov8n-pose.pt")
-        model.export(format='onnx', imgsz=640, simplify=True)
+        model.export(format='onnx', imgsz=480, simplify=True, dynamic=False)
         exported = Path("yolov8n-pose.onnx")
         if exported.exists():
             target = MODELS_OUTPUT / "yolov8-pose.onnx"
             exported.rename(target)
             print(f"  Saved to {target}")
+            
+            if quantize:
+                quantized_path = MODELS_OUTPUT / "yolov8-pose-quantized.onnx"
+                if quantize_onnx_model(target, quantized_path):
+                    target.unlink()
+                    quantized_path.rename(target)
     
-    # Segmentation model
-    print("Converting YOLOv8 segmentation model...")
-    seg_path = PROJECT_ROOT / "bike_angle_detection_model" / "yolov8n-seg.pt"
-    
-    if seg_path.exists():
-        model = YOLO(str(seg_path))
-        model.export(format='onnx', imgsz=640, simplify=True)
-        exported = seg_path.with_suffix('.onnx')
-        if exported.exists():
-            target = MODELS_OUTPUT / "yolov8-seg.onnx"
-            exported.rename(target)
-            print(f"  Saved to {target}")
-    else:
-        print("  Downloading and converting yolov8n-seg...")
-        model = YOLO("yolov8n-seg.pt")
-        model.export(format='onnx', imgsz=640, simplify=True)
-        exported = Path("yolov8n-seg.onnx")
-        if exported.exists():
-            target = MODELS_OUTPUT / "yolov8-seg.onnx"
-            exported.rename(target)
-            print(f"  Saved to {target}")
+    # Segmentation model - skip for now as it's not used in current inference
+    print("Skipping segmentation model (not used in current inference pipeline)")
     
     return True
 
