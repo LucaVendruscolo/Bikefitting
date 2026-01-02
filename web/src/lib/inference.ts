@@ -14,9 +14,9 @@ ort.env.wasm.wasmPaths = '/';
 
 // Model paths (relative to public folder)
 const MODEL_PATHS = {
-  pose: '/models/yolov8m-pose.onnx',
-  segmentation: '/models/yolov8n-seg.onnx',
-  bikeAngle: '/models/bike_angle.onnx',
+  pose: 'models/yolov8m-pose.onnx',
+  segmentation: 'models/yolov8n-seg.onnx',
+  bikeAngle: 'models/bike_angle.onnx',
 };
 
 // Config for bike angle model
