@@ -252,11 +252,27 @@ async function runBikeAnglePredictionTimed(
     const segResults = await segSession.run(segFeeds);
     segInference = performance.now() - t1;
     
+    // Debug: log output names and shapes
+    const outputNames = Object.keys(segResults);
+    console.log('Seg output names:', outputNames);
+    for (const name of outputNames) {
+      const out = segResults[name];
+      console.log(`  ${name}: dims=${out.dims}, size=${out.data?.length}`);
+    }
+    
     const t2 = performance.now();
     bikeMask = parseSegmentation(segResults, width, height);
     segPostprocess = performance.now() - t2;
+    
+    // Debug: check if mask was created
+    if (bikeMask) {
+      const maskPixels = bikeMask.reduce((sum, v) => sum + (v > 0 ? 1 : 0), 0);
+      console.log(`Bike mask created: ${maskPixels} pixels out of ${width*height}`);
+    } else {
+      console.log('Bike mask is null - no bike detected');
+    }
   } catch (e) {
-    console.warn('Segmentation failed, using center crop fallback');
+    console.warn('Segmentation failed:', e);
   }
 
   // 2. Create masked image
@@ -282,9 +298,28 @@ async function runBikeAnglePredictionTimed(
   const angleResults = await angleSession.run(angleFeeds);
   const angleInference = performance.now() - t5;
   
+  // Debug: log angle model outputs
+  const angleOutputNames = Object.keys(angleResults);
+  console.log('Angle model outputs:', angleOutputNames);
+  for (const name of angleOutputNames) {
+    const out = angleResults[name];
+    console.log(`  ${name}: dims=${out.dims}, size=${out.data?.length}`);
+  }
+  
   const t6 = performance.now();
   const logits = angleResults.output?.data as Float32Array;
   if (!logits) {
+    console.log('No logits found! Trying first output...');
+    // Try getting the first output regardless of name
+    const firstOutput = angleResults[angleOutputNames[0]];
+    if (firstOutput?.data) {
+      console.log('Using first output instead');
+      const angle = binsToAngle(firstOutput.data as Float32Array);
+      return { 
+        angle,
+        timing: { segPreprocess, segInference, segPostprocess, anglePreprocess, angleInference, anglePostprocess: performance.now() - t6 }
+      };
+    }
     return { 
       angle: null,
       timing: { segPreprocess, segInference, segPostprocess, anglePreprocess, angleInference, anglePostprocess: performance.now() - t6 }
@@ -292,6 +327,7 @@ async function runBikeAnglePredictionTimed(
   }
   
   const angle = binsToAngle(logits);
+  console.log('Predicted angle:', angle);
   const anglePostprocess = performance.now() - t6;
   
   return { 
@@ -398,8 +434,31 @@ function parseYoloPose(
  * output1: [1, 32, 160, 160] - prototype masks
  */
 function parseSegmentation(results: any, origW: number, origH: number): Uint8Array | null {
-  const output0 = results.output0?.data as Float32Array;
-  const output1 = results.output1?.data as Float32Array;
+  // Handle different possible output names from YOLO ONNX
+  const outputNames = Object.keys(results);
+  console.log('parseSegmentation - outputs:', outputNames);
+  
+  // Find detection output (larger one with 116 features)
+  // Find proto output (smaller one with mask prototypes)
+  let output0: Float32Array | null = null;
+  let output1: Float32Array | null = null;
+  
+  for (const name of outputNames) {
+    const out = results[name];
+    const dims = out.dims;
+    console.log(`  ${name}: dims=${dims}`);
+    
+    // Detection output: [1, 116, 8400] or similar
+    if (dims.length === 3 && dims[1] === 116) {
+      output0 = out.data as Float32Array;
+      console.log('  -> Using as detection output');
+    }
+    // Proto output: [1, 32, 160, 160]
+    else if (dims.length === 4 && dims[1] === 32) {
+      output1 = out.data as Float32Array;
+      console.log('  -> Using as proto output');
+    }
+  }
   
   if (!output0 || !output1) return null;
   
