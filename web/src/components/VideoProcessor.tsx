@@ -26,16 +26,22 @@ export default function VideoProcessor({
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [modelState, setModelState] = useState<ModelState | null>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
   const [currentFrame, setCurrentFrame] = useState(0);
   const [totalFrames, setTotalFrames] = useState(0);
+  const stopRef = useRef(false);
+
+  // Video settings
+  const [videoDuration, setVideoDuration] = useState(0);
+  const [startTime, setStartTime] = useState(0);
+  const [endTime, setEndTime] = useState(0);
+  const [fps, setFps] = useState(5);
 
   // Load models on mount
   useEffect(() => {
     const init = async () => {
       setProcessingState('loading-models');
       try {
-        const state = await loadModels((p) => setProgress(p * 0.3)); // 0-30% for model loading
+        const state = await loadModels((p) => setProgress(p * 0.3));
         setModelState(state);
         setProcessingState('idle');
         setProgress(0);
@@ -50,10 +56,21 @@ export default function VideoProcessor({
   const handleLoadedMetadata = useCallback(() => {
     const video = videoRef.current;
     if (video) {
-      const fps = 30; // Assume 30fps, will adjust based on duration
-      const frames = Math.floor(video.duration * fps);
-      setTotalFrames(frames);
+      setVideoDuration(video.duration);
+      setEndTime(video.duration);
     }
+  }, []);
+
+  // Format time as MM:SS
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  // Stop processing
+  const stopProcessing = useCallback(() => {
+    stopRef.current = true;
   }, []);
 
   // Start processing
@@ -62,20 +79,20 @@ export default function VideoProcessor({
     const canvas = canvasRef.current;
     if (!video || !canvas || !modelState) return;
 
+    stopRef.current = false;
     setProcessingState('processing');
-    setProgress(30); // Start at 30% (models already loaded)
+    setProgress(30);
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Set canvas size to match video
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
 
-    const fps = 10; // Process at 10fps
     const frameInterval = 1 / fps;
-    const totalDuration = video.duration;
-    const framesToProcess = Math.floor(totalDuration * fps);
+    const duration = endTime - startTime;
+    const framesToProcess = Math.floor(duration * fps);
+    setTotalFrames(framesToProcess);
 
     const results: AnalysisResults = {
       jointAngles: { knee: [], hip: [], elbow: [] },
@@ -84,12 +101,20 @@ export default function VideoProcessor({
       fps: fps,
     };
 
-    // Process frames
+    // Track which side is dominant
+    let leftCount = 0;
+    let rightCount = 0;
+
     for (let i = 0; i < framesToProcess; i++) {
-      const time = i * frameInterval;
+      if (stopRef.current) {
+        setProcessingState('idle');
+        setProgress(0);
+        return;
+      }
+
+      const time = startTime + i * frameInterval;
       video.currentTime = time;
 
-      // Wait for frame to load
       await new Promise<void>((resolve) => {
         const onSeeked = () => {
           video.removeEventListener('seeked', onSeeked);
@@ -98,17 +123,12 @@ export default function VideoProcessor({
         video.addEventListener('seeked', onSeeked);
       });
 
-      // Draw frame to canvas
       ctx.drawImage(video, 0, 0);
-
-      // Get image data
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
       try {
-        // Process frame with models
         const frameResults = await processFrame(imageData, modelState);
 
-        // Store results
         if (frameResults.jointAngles.knee !== null) {
           results.jointAngles.knee.push(frameResults.jointAngles.knee);
         }
@@ -122,44 +142,58 @@ export default function VideoProcessor({
           results.bikeAngles.push(frameResults.bikeAngle);
         }
 
-        // Draw skeleton overlay
+        // Draw skeleton (only visible side, no head)
         if (frameResults.skeleton) {
-          drawSkeleton(ctx, frameResults.skeleton);
-        }
-
-        // Draw bike mask outline
-        if (frameResults.bikeMask) {
-          drawBikeMask(ctx, frameResults.bikeMask);
+          if (frameResults.skeleton.side === 'left') leftCount++;
+          else if (frameResults.skeleton.side === 'right') rightCount++;
+          
+          const dominantSide = leftCount >= rightCount ? 'left' : 'right';
+          drawSkeleton(ctx, frameResults.skeleton, dominantSide);
         }
 
       } catch (err) {
         console.warn(`Frame ${i} processing error:`, err);
       }
 
-      // Update progress (30-100%)
       const frameProgress = 30 + (i / framesToProcess) * 70;
       setProgress(frameProgress);
       setCurrentFrame(i);
     }
 
     onComplete(results);
-  }, [modelState, onComplete, setProcessingState, setProgress]);
+  }, [modelState, onComplete, setProcessingState, setProgress, startTime, endTime, fps]);
 
-  // Draw skeleton on canvas
-  const drawSkeleton = (ctx: CanvasRenderingContext2D, skeleton: any) => {
+  // Draw skeleton - only visible side, no head features
+  const drawSkeleton = (ctx: CanvasRenderingContext2D, skeleton: any, dominantSide: 'left' | 'right') => {
     if (!skeleton || !skeleton.keypoints) return;
 
-    const connections = [
-      [5, 7], [7, 9],   // Left arm
-      [6, 8], [8, 10],  // Right arm
-      [5, 11], [6, 12], // Torso
-      [11, 13], [13, 15], // Left leg
-      [12, 14], [14, 16], // Right leg
+    const side = skeleton.side || dominantSide;
+    
+    // Connections for each side (no head, no cross-body)
+    const leftConnections = [
+      [5, 7], [7, 9],     // Left arm: shoulder-elbow-wrist
+      [5, 11],            // Left torso: shoulder-hip
+      [11, 13], [13, 15], // Left leg: hip-knee-ankle
     ];
+    
+    const rightConnections = [
+      [6, 8], [8, 10],    // Right arm: shoulder-elbow-wrist
+      [6, 12],            // Right torso: shoulder-hip
+      [12, 14], [14, 16], // Right leg: hip-knee-ankle
+    ];
+
+    const connections = side === 'left' ? leftConnections : rightConnections;
+    
+    // Keypoint indices for the visible side (no head: 0-4)
+    const visibleKeypoints = side === 'left' 
+      ? [5, 7, 9, 11, 13, 15]  // Left: shoulder, elbow, wrist, hip, knee, ankle
+      : [6, 8, 10, 12, 14, 16]; // Right: shoulder, elbow, wrist, hip, knee, ankle
 
     // Draw connections
     ctx.strokeStyle = '#00FFFF';
     ctx.lineWidth = 3;
+    ctx.lineCap = 'round';
+    
     for (const [start, end] of connections) {
       const p1 = skeleton.keypoints[start];
       const p2 = skeleton.keypoints[end];
@@ -171,24 +205,16 @@ export default function VideoProcessor({
       }
     }
 
-    // Draw keypoints
+    // Draw keypoints (only for visible side, no head)
     ctx.fillStyle = '#FF00FF';
-    for (const kp of skeleton.keypoints) {
+    for (const idx of visibleKeypoints) {
+      const kp = skeleton.keypoints[idx];
       if (kp && kp.confidence > 0.3) {
         ctx.beginPath();
-        ctx.arc(kp.x, kp.y, 5, 0, Math.PI * 2);
+        ctx.arc(kp.x, kp.y, 6, 0, Math.PI * 2);
         ctx.fill();
       }
     }
-  };
-
-  // Draw bike mask outline
-  const drawBikeMask = (ctx: CanvasRenderingContext2D, mask: any) => {
-    // Placeholder - will implement actual mask drawing
-    if (!mask) return;
-    ctx.strokeStyle = '#00FF00';
-    ctx.lineWidth = 2;
-    // Draw mask contours when implemented
   };
 
   return (
@@ -202,13 +228,13 @@ export default function VideoProcessor({
           className="w-full h-full object-contain"
           playsInline
           muted
+          controls={processingState === 'idle'}
         />
         <canvas
           ref={canvasRef}
           className="absolute inset-0 w-full h-full object-contain pointer-events-none"
         />
 
-        {/* Processing Overlay */}
         {processingState === 'loading-models' && (
           <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center">
             <div className="spinner mb-4" />
@@ -237,16 +263,98 @@ export default function VideoProcessor({
         </div>
       )}
 
-      {/* Start Button */}
+      {/* Settings Panel - only show when idle and models loaded */}
+      {processingState === 'idle' && modelState && videoDuration > 0 && (
+        <div className="bg-slate-800/50 rounded-xl p-4 space-y-4">
+          <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wide">Processing Settings</h3>
+          
+          {/* Time Range */}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Start Time</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="range"
+                  min={0}
+                  max={videoDuration}
+                  step={0.1}
+                  value={startTime}
+                  onChange={(e) => {
+                    const val = parseFloat(e.target.value);
+                    setStartTime(Math.min(val, endTime - 1));
+                    if (videoRef.current) videoRef.current.currentTime = val;
+                  }}
+                  className="flex-1 accent-cyan-500"
+                />
+                <span className="text-sm text-gray-300 w-12">{formatTime(startTime)}</span>
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">End Time</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="range"
+                  min={0}
+                  max={videoDuration}
+                  step={0.1}
+                  value={endTime}
+                  onChange={(e) => {
+                    const val = parseFloat(e.target.value);
+                    setEndTime(Math.max(val, startTime + 1));
+                    if (videoRef.current) videoRef.current.currentTime = val;
+                  }}
+                  className="flex-1 accent-cyan-500"
+                />
+                <span className="text-sm text-gray-300 w-12">{formatTime(endTime)}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Frame Rate */}
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">
+              Frame Rate: {fps} fps ({Math.floor((endTime - startTime) * fps)} frames)
+            </label>
+            <input
+              type="range"
+              min={1}
+              max={30}
+              step={1}
+              value={fps}
+              onChange={(e) => setFps(parseInt(e.target.value))}
+              className="w-full accent-cyan-500"
+            />
+            <div className="flex justify-between text-xs text-gray-500 mt-1">
+              <span>1 fps (fast)</span>
+              <span>30 fps (detailed)</span>
+            </div>
+          </div>
+
+          {/* Duration info */}
+          <p className="text-xs text-gray-500">
+            Processing {formatTime(endTime - startTime)} of video ({Math.floor((endTime - startTime) * fps)} frames)
+          </p>
+        </div>
+      )}
+
+      {/* Buttons */}
       {processingState === 'idle' && modelState && (
         <button
           onClick={startProcessing}
-          className="w-full py-3 bg-gradient-to-r from-blue-500 to-emerald-500 hover:from-blue-600 hover:to-emerald-600 rounded-xl font-semibold transition"
+          className="w-full py-3 bg-gradient-to-r from-cyan-500 to-emerald-500 hover:from-cyan-600 hover:to-emerald-600 rounded-xl font-semibold transition"
         >
           Start Analysis
+        </button>
+      )}
+
+      {processingState === 'processing' && (
+        <button
+          onClick={stopProcessing}
+          className="w-full py-3 bg-red-500 hover:bg-red-600 rounded-xl font-semibold transition"
+        >
+          Stop Processing
         </button>
       )}
     </div>
   );
 }
-
