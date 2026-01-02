@@ -482,8 +482,9 @@ function calculateAngleFromBins(logits: Float32Array): number {
   const numBins = BIKE_ANGLE_CONFIG.numBins;
   
   // Softmax
-  const maxLogit = Math.max(...logits);
-  const expLogits = Array.from(logits).map(l => Math.exp(l - maxLogit));
+  const logitsArray = Array.from(logits);
+  const maxLogit = Math.max(...logitsArray);
+  const expLogits = logitsArray.map(l => Math.exp(l - maxLogit));
   const sumExp = expLogits.reduce((a, b) => a + b, 0);
   const probs = expLogits.map(e => e / sumExp);
   
