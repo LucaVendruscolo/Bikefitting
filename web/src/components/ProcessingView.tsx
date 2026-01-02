@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef, useState, useCallback, useEffect } from 'react';
-import { FrameData } from '@/lib/types';
+import { FrameData, FrameMetrics, ProcessingMetrics } from '@/lib/types';
 import { loadModels, processVideoFrame, ModelState } from '@/lib/inference';
 
 interface ProcessingViewProps {
@@ -38,6 +38,12 @@ export default function ProcessingView({
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
+  // Timing metrics
+  const [modelLoadTime, setModelLoadTime] = useState(0);
+  const [currentMetrics, setCurrentMetrics] = useState<FrameMetrics | null>(null);
+  const [avgMetrics, setAvgMetrics] = useState<ProcessingMetrics | null>(null);
+  const [showMetrics, setShowMetrics] = useState(true);
+
   // Handle video metadata
   const handleLoadedMetadata = useCallback(() => {
     const video = videoRef.current;
@@ -63,14 +69,20 @@ export default function ProcessingView({
     stopRef.current = false;
     onStartProcessing();
     setError(null);
+    setCurrentMetrics(null);
+    setAvgMetrics(null);
 
     // Load models if not loaded
     let models = modelState;
+    let loadTime = modelLoadTime;
     if (!models || !models.isLoaded) {
       setLoadingModels(true);
+      const loadStart = performance.now();
       try {
         models = await loadModels((p) => setModelProgress(p));
         setModelState(models);
+        loadTime = performance.now() - loadStart;
+        setModelLoadTime(loadTime);
       } catch (err) {
         setError(`Failed to load AI models: ${err}`);
         return;
@@ -92,6 +104,9 @@ export default function ProcessingView({
     setTotalFrames(framesToProcess);
 
     const frames: FrameData[] = [];
+    
+    // Metrics accumulator
+    const allMetrics: FrameMetrics[] = [];
 
     // Process each frame
     for (let i = 0; i < framesToProcess; i++) {
@@ -116,8 +131,29 @@ export default function ProcessingView({
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
       try {
-        const frameData = await processVideoFrame(imageData, time, models!);
+        const { frame: frameData, metrics } = await processVideoFrame(imageData, time, models!);
         frames.push(frameData);
+        allMetrics.push(metrics);
+        setCurrentMetrics(metrics);
+        
+        // Update running average
+        if (allMetrics.length > 0) {
+          const avg: ProcessingMetrics = {
+            frameCount: allMetrics.length,
+            avgTotalFrame: allMetrics.reduce((s, m) => s + m.totalFrame, 0) / allMetrics.length,
+            avgPosePreprocess: allMetrics.reduce((s, m) => s + m.posePreprocess, 0) / allMetrics.length,
+            avgPoseInference: allMetrics.reduce((s, m) => s + m.poseInference, 0) / allMetrics.length,
+            avgPosePostprocess: allMetrics.reduce((s, m) => s + m.posePostprocess, 0) / allMetrics.length,
+            avgSegPreprocess: allMetrics.reduce((s, m) => s + m.segPreprocess, 0) / allMetrics.length,
+            avgSegInference: allMetrics.reduce((s, m) => s + m.segInference, 0) / allMetrics.length,
+            avgSegPostprocess: allMetrics.reduce((s, m) => s + m.segPostprocess, 0) / allMetrics.length,
+            avgAnglePreprocess: allMetrics.reduce((s, m) => s + m.anglePreprocess, 0) / allMetrics.length,
+            avgAngleInference: allMetrics.reduce((s, m) => s + m.angleInference, 0) / allMetrics.length,
+            avgAnglePostprocess: allMetrics.reduce((s, m) => s + m.anglePostprocess, 0) / allMetrics.length,
+            modelLoadTime: loadTime,
+          };
+          setAvgMetrics(avg);
+        }
       } catch (err) {
         console.warn(`Frame ${i} error:`, err);
         frames.push({
@@ -134,7 +170,7 @@ export default function ProcessingView({
     }
 
     onProcessingComplete(frames, startTime, endTime, fps);
-  }, [modelState, startTime, endTime, fps, onStartProcessing, onProcessingComplete]);
+  }, [modelState, modelLoadTime, startTime, endTime, fps, onStartProcessing, onProcessingComplete]);
 
   // Stop processing
   const stopProcessing = useCallback(() => {
@@ -147,6 +183,9 @@ export default function ProcessingView({
       videoRef.current.currentTime = time;
     }
   }, []);
+
+  // Format milliseconds
+  const formatMs = (ms: number) => ms.toFixed(1) + 'ms';
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -203,6 +242,134 @@ export default function ProcessingView({
             </div>
           )}
         </div>
+
+        {/* Performance Metrics Panel */}
+        {(isProcessing || avgMetrics) && showMetrics && (
+          <div className="glass rounded-3xl p-4 mt-4">
+            <div className="flex justify-between items-center mb-3">
+              <h4 className="text-white font-medium text-sm">Performance Metrics</h4>
+              <button 
+                onClick={() => setShowMetrics(false)}
+                className="text-white/40 hover:text-white/60 text-xs"
+              >
+                Hide
+              </button>
+            </div>
+            
+            {avgMetrics && (
+              <div className="space-y-3 text-xs">
+                {/* Summary */}
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="glass-light rounded-lg p-2 text-center">
+                    <div className="text-white/40">Avg Frame</div>
+                    <div className="text-emerald-400 font-mono text-sm">{formatMs(avgMetrics.avgTotalFrame)}</div>
+                  </div>
+                  <div className="glass-light rounded-lg p-2 text-center">
+                    <div className="text-white/40">Est. FPS</div>
+                    <div className="text-blue-400 font-mono text-sm">{(1000 / avgMetrics.avgTotalFrame).toFixed(1)}</div>
+                  </div>
+                  <div className="glass-light rounded-lg p-2 text-center">
+                    <div className="text-white/40">Model Load</div>
+                    <div className="text-violet-400 font-mono text-sm">{(avgMetrics.modelLoadTime / 1000).toFixed(1)}s</div>
+                  </div>
+                </div>
+
+                {/* Breakdown by model */}
+                <div className="space-y-2">
+                  {/* Pose Model */}
+                  <div className="glass-light rounded-lg p-2">
+                    <div className="flex justify-between text-white/60 mb-1">
+                      <span>Pose (YOLOv8m)</span>
+                      <span className="text-cyan-400 font-mono">
+                        {formatMs(avgMetrics.avgPosePreprocess + avgMetrics.avgPoseInference + avgMetrics.avgPosePostprocess)}
+                      </span>
+                    </div>
+                    <div className="flex gap-2 text-white/40">
+                      <span>Pre: {formatMs(avgMetrics.avgPosePreprocess)}</span>
+                      <span>•</span>
+                      <span className="text-cyan-400/80">Inf: {formatMs(avgMetrics.avgPoseInference)}</span>
+                      <span>•</span>
+                      <span>Post: {formatMs(avgMetrics.avgPosePostprocess)}</span>
+                    </div>
+                    <div className="mt-1 h-1 bg-white/10 rounded-full overflow-hidden">
+                      <div 
+                        className="h-full bg-cyan-500" 
+                        style={{ width: `${((avgMetrics.avgPosePreprocess + avgMetrics.avgPoseInference + avgMetrics.avgPosePostprocess) / avgMetrics.avgTotalFrame) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Segmentation Model */}
+                  <div className="glass-light rounded-lg p-2">
+                    <div className="flex justify-between text-white/60 mb-1">
+                      <span>Seg (YOLOv8n)</span>
+                      <span className="text-yellow-400 font-mono">
+                        {formatMs(avgMetrics.avgSegPreprocess + avgMetrics.avgSegInference + avgMetrics.avgSegPostprocess)}
+                      </span>
+                    </div>
+                    <div className="flex gap-2 text-white/40">
+                      <span>Pre: {formatMs(avgMetrics.avgSegPreprocess)}</span>
+                      <span>•</span>
+                      <span className="text-yellow-400/80">Inf: {formatMs(avgMetrics.avgSegInference)}</span>
+                      <span>•</span>
+                      <span>Post: {formatMs(avgMetrics.avgSegPostprocess)}</span>
+                    </div>
+                    <div className="mt-1 h-1 bg-white/10 rounded-full overflow-hidden">
+                      <div 
+                        className="h-full bg-yellow-500" 
+                        style={{ width: `${((avgMetrics.avgSegPreprocess + avgMetrics.avgSegInference + avgMetrics.avgSegPostprocess) / avgMetrics.avgTotalFrame) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Angle Model */}
+                  <div className="glass-light rounded-lg p-2">
+                    <div className="flex justify-between text-white/60 mb-1">
+                      <span>Angle (ConvNeXt)</span>
+                      <span className="text-pink-400 font-mono">
+                        {formatMs(avgMetrics.avgAnglePreprocess + avgMetrics.avgAngleInference + avgMetrics.avgAnglePostprocess)}
+                      </span>
+                    </div>
+                    <div className="flex gap-2 text-white/40">
+                      <span>Pre: {formatMs(avgMetrics.avgAnglePreprocess)}</span>
+                      <span>•</span>
+                      <span className="text-pink-400/80">Inf: {formatMs(avgMetrics.avgAngleInference)}</span>
+                      <span>•</span>
+                      <span>Post: {formatMs(avgMetrics.avgAnglePostprocess)}</span>
+                    </div>
+                    <div className="mt-1 h-1 bg-white/10 rounded-full overflow-hidden">
+                      <div 
+                        className="h-full bg-pink-500" 
+                        style={{ width: `${((avgMetrics.avgAnglePreprocess + avgMetrics.avgAngleInference + avgMetrics.avgAnglePostprocess) / avgMetrics.avgTotalFrame) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Current frame time */}
+                {currentMetrics && isProcessing && (
+                  <div className="text-white/40 text-center pt-1 border-t border-white/10">
+                    Current frame: <span className="text-white font-mono">{formatMs(currentMetrics.totalFrame)}</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {!avgMetrics && isProcessing && (
+              <p className="text-white/40 text-sm">Collecting metrics...</p>
+            )}
+          </div>
+        )}
+
+        {/* Show metrics button when hidden */}
+        {!showMetrics && avgMetrics && (
+          <button 
+            onClick={() => setShowMetrics(true)}
+            className="mt-4 text-white/40 hover:text-white/60 text-xs"
+          >
+            Show Performance Metrics
+          </button>
+        )}
       </div>
 
       {/* Settings Panel */}

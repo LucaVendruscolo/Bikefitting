@@ -54,3 +54,33 @@ export interface CurrentAngles {
   bike: number | null;
 }
 
+// Processing timing metrics
+export interface FrameMetrics {
+  posePreprocess: number;
+  poseInference: number;
+  posePostprocess: number;
+  segPreprocess: number;
+  segInference: number;
+  segPostprocess: number;
+  anglePreprocess: number;
+  angleInference: number;
+  anglePostprocess: number;
+  totalFrame: number;
+}
+
+// Aggregated metrics across all frames
+export interface ProcessingMetrics {
+  frameCount: number;
+  avgTotalFrame: number;
+  avgPosePreprocess: number;
+  avgPoseInference: number;
+  avgPosePostprocess: number;
+  avgSegPreprocess: number;
+  avgSegInference: number;
+  avgSegPostprocess: number;
+  avgAnglePreprocess: number;
+  avgAngleInference: number;
+  avgAnglePostprocess: number;
+  modelLoadTime: number;
+}
+

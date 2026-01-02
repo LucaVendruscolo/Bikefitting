@@ -8,7 +8,7 @@
  * 3. Angle classification (ConvNeXt) → bike angle
  */
 
-import { FrameData, Keypoint, Skeleton, JointAngles } from './types';
+import { FrameData, Keypoint, Skeleton, JointAngles, FrameMetrics } from './types';
 
 // Model URLs - loaded from GitHub LFS
 const GITHUB_LFS_BASE = 'https://media.githubusercontent.com/media/LucaVendruscolo/Bikefitting/main/web/public/models';
@@ -117,113 +117,187 @@ export async function loadModels(onProgress?: (progress: number) => void): Promi
 }
 
 /**
- * Process a single video frame
+ * Process a single video frame with timing metrics
  */
 export async function processVideoFrame(
   imageData: ImageData,
   time: number,
   models: ModelState
-): Promise<FrameData> {
+): Promise<{ frame: FrameData; metrics: FrameMetrics }> {
   const { poseSession, segSession, angleSession, ort } = models;
+  const frameStart = performance.now();
 
-  // 1. Pose detection
-  const poseResult = await runPoseDetection(imageData, poseSession, ort);
+  // 1. Pose detection with timing
+  const poseResult = await runPoseDetectionTimed(imageData, poseSession, ort);
   
-  // 2. Bike segmentation + angle prediction
-  const bikeResult = await runBikeAnglePrediction(imageData, segSession, angleSession, ort);
+  // 2. Bike segmentation + angle prediction with timing
+  const bikeResult = await runBikeAnglePredictionTimed(imageData, segSession, angleSession, ort);
+
+  const totalFrame = performance.now() - frameStart;
 
   return {
-    time,
-    skeleton: poseResult.skeleton,
-    jointAngles: poseResult.angles,
-    bikeAngle: bikeResult.angle,
-    bikeMask: null, // Not storing mask for now
+    frame: {
+      time,
+      skeleton: poseResult.skeleton,
+      jointAngles: poseResult.angles,
+      bikeAngle: bikeResult.angle,
+      bikeMask: null,
+    },
+    metrics: {
+      posePreprocess: poseResult.timing.preprocess,
+      poseInference: poseResult.timing.inference,
+      posePostprocess: poseResult.timing.postprocess,
+      segPreprocess: bikeResult.timing.segPreprocess,
+      segInference: bikeResult.timing.segInference,
+      segPostprocess: bikeResult.timing.segPostprocess,
+      anglePreprocess: bikeResult.timing.anglePreprocess,
+      angleInference: bikeResult.timing.angleInference,
+      anglePostprocess: bikeResult.timing.anglePostprocess,
+      totalFrame,
+    },
   };
 }
 
 /**
- * Run pose detection and calculate joint angles
+ * Run pose detection with timing metrics
  */
-async function runPoseDetection(
+async function runPoseDetectionTimed(
   imageData: ImageData,
   session: any,
   ort: any
-): Promise<{ skeleton: Skeleton | null; angles: JointAngles }> {
+): Promise<{ 
+  skeleton: Skeleton | null; 
+  angles: JointAngles;
+  timing: { preprocess: number; inference: number; postprocess: number };
+}> {
   const { width, height } = imageData;
-  
-  // Preprocess for YOLO (640x640, letterbox)
   const inputSize = 640;
-  const inputTensor = preprocessYolo(imageData, inputSize, ort);
   
-  // Run inference
+  // Preprocess
+  const t0 = performance.now();
+  const inputTensor = preprocessYolo(imageData, inputSize, ort);
+  const preprocessTime = performance.now() - t0;
+  
+  // Inference
+  const t1 = performance.now();
   const feeds = { images: inputTensor };
   const results = await session.run(feeds);
+  const inferenceTime = performance.now() - t1;
+  
+  // Postprocess
+  const t2 = performance.now();
   const output = results.output0;
   
   if (!output) {
-    return { skeleton: null, angles: { knee: null, hip: null, elbow: null } };
+    return { 
+      skeleton: null, 
+      angles: { knee: null, hip: null, elbow: null },
+      timing: { preprocess: preprocessTime, inference: inferenceTime, postprocess: performance.now() - t2 }
+    };
   }
 
-  // Parse YOLO pose output
   const keypoints = parseYoloPose(output.data as Float32Array, width, height, inputSize);
   if (!keypoints) {
-    return { skeleton: null, angles: { knee: null, hip: null, elbow: null } };
+    return { 
+      skeleton: null, 
+      angles: { knee: null, hip: null, elbow: null },
+      timing: { preprocess: preprocessTime, inference: inferenceTime, postprocess: performance.now() - t2 }
+    };
   }
 
-  // Determine visible side
   const side = determineSide(keypoints);
-  
-  // Calculate joint angles
   const angles = calculateJointAngles(keypoints, side);
+  const postprocessTime = performance.now() - t2;
 
   return {
     skeleton: { keypoints, side },
     angles,
+    timing: { preprocess: preprocessTime, inference: inferenceTime, postprocess: postprocessTime }
   };
 }
 
 /**
- * Run bike segmentation and angle prediction
+ * Run bike segmentation and angle prediction with timing
  * Matches 1_preprocess.py and 2_train.py exactly
  */
-async function runBikeAnglePrediction(
+async function runBikeAnglePredictionTimed(
   imageData: ImageData,
   segSession: any,
   angleSession: any,
   ort: any
-): Promise<{ angle: number | null }> {
+): Promise<{ 
+  angle: number | null;
+  timing: {
+    segPreprocess: number;
+    segInference: number;
+    segPostprocess: number;
+    anglePreprocess: number;
+    angleInference: number;
+    anglePostprocess: number;
+  };
+}> {
   const { width, height } = imageData;
   
-  // 1. Try to run segmentation for bike mask (optional - fallback to center crop)
+  // 1. Segmentation
   let bikeMask: Uint8Array | null = null;
+  let segPreprocess = 0, segInference = 0, segPostprocess = 0;
+  
   try {
+    const t0 = performance.now();
     const segInput = preprocessYolo(imageData, 640, ort);
+    segPreprocess = performance.now() - t0;
+    
+    const t1 = performance.now();
     const segFeeds = { images: segInput };
     const segResults = await segSession.run(segFeeds);
+    segInference = performance.now() - t1;
+    
+    const t2 = performance.now();
     bikeMask = parseSegmentation(segResults, width, height);
+    segPostprocess = performance.now() - t2;
   } catch (e) {
     console.warn('Segmentation failed, using center crop fallback');
   }
 
-  // 2. Create bike image (masked if available, otherwise center crop)
+  // 2. Create masked image
+  const t3 = performance.now();
   const maskedImage = createMaskedBikeImage(imageData, bikeMask, BIKE_ANGLE_CONFIG.inputSize);
+  const maskCreateTime = performance.now() - t3;
+  segPostprocess += maskCreateTime; // Include in seg postprocess
+  
   if (!maskedImage) {
-    return { angle: null };
+    return { 
+      angle: null,
+      timing: { segPreprocess, segInference, segPostprocess, anglePreprocess: 0, angleInference: 0, anglePostprocess: 0 }
+    };
   }
 
-  // 3. Run angle prediction (same preprocessing as 2_train.py)
+  // 3. Angle prediction
+  const t4 = performance.now();
   const angleInput = preprocessForAngleModel(maskedImage, ort);
+  const anglePreprocess = performance.now() - t4;
+  
+  const t5 = performance.now();
   const angleFeeds = { input: angleInput };
   const angleResults = await angleSession.run(angleFeeds);
+  const angleInference = performance.now() - t5;
   
-  // 4. Convert bins to angle using circular mean
+  const t6 = performance.now();
   const logits = angleResults.output?.data as Float32Array;
   if (!logits) {
-    return { angle: null };
+    return { 
+      angle: null,
+      timing: { segPreprocess, segInference, segPostprocess, anglePreprocess, angleInference, anglePostprocess: performance.now() - t6 }
+    };
   }
   
   const angle = binsToAngle(logits);
-  return { angle };
+  const anglePostprocess = performance.now() - t6;
+  
+  return { 
+    angle,
+    timing: { segPreprocess, segInference, segPostprocess, anglePreprocess, angleInference, anglePostprocess }
+  };
 }
 
 /**
