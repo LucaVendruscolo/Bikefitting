@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from 'react';
 import VideoUploader from '@/components/VideoUploader';
-import VideoPlayer from '@/components/VideoPlayer';
+import VideoProcessor from '@/components/VideoProcessor';
 
 export default function Home() {
   const [videoFile, setVideoFile] = useState<File | null>(null);
@@ -39,17 +39,10 @@ export default function Home() {
           <VideoUploader onVideoSelect={handleVideoSelect} />
         )}
 
-        {/* Video Player Section */}
+        {/* Video Processor Section */}
         {videoFile && videoUrl && (
           <div className="space-y-4">
-            <VideoPlayer videoUrl={videoUrl} />
-            
-            <button
-              onClick={handleReset}
-              className="px-6 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg transition"
-            >
-              Upload New Video
-            </button>
+            <VideoProcessor videoUrl={videoUrl} onReset={handleReset} />
           </div>
         )}
 
