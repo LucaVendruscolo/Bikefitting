@@ -9,11 +9,14 @@
  * ONNX Runtime is loaded from CDN to avoid webpack bundling issues.
  */
 
-// Model paths (relative to public folder)
+// Model paths - use GitHub LFS media URLs since Vercel doesn't handle LFS well
+const USE_GITHUB_LFS = true;
+const GITHUB_LFS_BASE = 'https://media.githubusercontent.com/media/LucaVendruscolo/Bikefitting/main/web/public/models';
+
 const MODEL_PATHS = {
-  pose: 'models/yolov8m-pose.onnx',
-  segmentation: 'models/yolov8n-seg.onnx',
-  bikeAngle: 'models/bike_angle.onnx',
+  pose: USE_GITHUB_LFS ? `${GITHUB_LFS_BASE}/yolov8m-pose.onnx` : 'models/yolov8m-pose.onnx',
+  segmentation: USE_GITHUB_LFS ? `${GITHUB_LFS_BASE}/yolov8n-seg.onnx` : 'models/yolov8n-seg.onnx',
+  bikeAngle: USE_GITHUB_LFS ? `${GITHUB_LFS_BASE}/bike_angle.onnx` : 'models/bike_angle.onnx',
 };
 
 // Config for bike angle model
