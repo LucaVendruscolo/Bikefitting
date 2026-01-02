@@ -1,6 +1,4 @@
 {
-  "buildCommand": "npm run build",
-  "outputDirectory": "out",
   "framework": "nextjs",
   "headers": [
     {
@@ -14,4 +12,3 @@
     }
   ]
 }
-
