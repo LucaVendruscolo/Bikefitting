@@ -42,12 +42,15 @@ export default function VideoProcessor({ videoUrl, onReset }: VideoProcessorProp
   const [detectedSide, setDetectedSide] = useState<'left' | 'right'>('right');
 
   // Playback state
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
   const [currentAngles, setCurrentAngles] = useState({
     knee: null as number | null,
     hip: null as number | null,
     elbow: null as number | null,
     bike: null as number | null,
   });
+  const animationRef = useRef<number>(0);
 
   // Handle video metadata
   const handleLoadedMetadata = useCallback(() => {
@@ -169,8 +172,8 @@ export default function VideoProcessor({ videoUrl, onReset }: VideoProcessorProp
     stopRef.current = true;
   }, []);
 
-  // Handle video time update during playback
-  const handleTimeUpdate = useCallback(() => {
+  // Playback render loop
+  const renderPlayback = useCallback(() => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
     if (!video || !canvas || phase !== 'playback' || frameResults.length === 0) return;
@@ -179,19 +182,21 @@ export default function VideoProcessor({ videoUrl, onReset }: VideoProcessorProp
     if (!ctx) return;
 
     // Find the closest frame result
-    const currentTime = video.currentTime;
+    const time = video.currentTime;
+    setCurrentTime(time);
+    
     let closestFrame = frameResults[0];
-    let minDiff = Math.abs(currentTime - closestFrame.time);
+    let minDiff = Math.abs(time - closestFrame.time);
 
     for (const frame of frameResults) {
-      const diff = Math.abs(currentTime - frame.time);
+      const diff = Math.abs(time - frame.time);
       if (diff < minDiff) {
         minDiff = diff;
         closestFrame = frame;
       }
     }
 
-    // Draw video frame
+    // Draw video frame onto canvas
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
     // Draw skeleton if available
@@ -206,7 +211,55 @@ export default function VideoProcessor({ videoUrl, onReset }: VideoProcessorProp
       elbow: closestFrame.jointAngles.elbow,
       bike: closestFrame.bikeAngle,
     });
+
+    // Continue animation loop
+    animationRef.current = requestAnimationFrame(renderPlayback);
   }, [phase, frameResults, detectedSide]);
+
+  // Handle video time update (for seeking)
+  const handleTimeUpdate = useCallback(() => {
+    if (phase === 'playback') {
+      renderPlayback();
+    }
+  }, [phase, renderPlayback]);
+
+  // Start/stop playback loop
+  const togglePlayback = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    if (video.paused) {
+      video.play();
+      setIsPlaying(true);
+      animationRef.current = requestAnimationFrame(renderPlayback);
+    } else {
+      video.pause();
+      setIsPlaying(false);
+      cancelAnimationFrame(animationRef.current);
+    }
+  }, [renderPlayback]);
+
+  // Cleanup animation frame on unmount
+  useEffect(() => {
+    return () => {
+      cancelAnimationFrame(animationRef.current);
+    };
+  }, []);
+
+  // Initialize canvas when entering playback
+  useEffect(() => {
+    if (phase === 'playback') {
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      if (video && canvas) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        video.currentTime = startTime;
+        // Initial render
+        setTimeout(() => renderPlayback(), 100);
+      }
+    }
+  }, [phase, startTime, renderPlayback]);
 
   // Draw skeleton - only visible side, no head
   const drawSkeleton = (ctx: CanvasRenderingContext2D, skeleton: any, side: 'left' | 'right') => {
@@ -253,21 +306,54 @@ export default function VideoProcessor({ videoUrl, onReset }: VideoProcessorProp
       {/* Video Container */}
       <div className="lg:col-span-3">
         <div className="aspect-video bg-black rounded-xl overflow-hidden relative">
+          {/* Video element - always present but hidden during playback */}
           <video
             ref={videoRef}
             src={videoUrl}
             onLoadedMetadata={handleLoadedMetadata}
             onTimeUpdate={handleTimeUpdate}
-            className="w-full h-full object-contain"
-            controls={phase === 'playback'}
+            className={phase === 'playback' ? 'hidden' : 'w-full h-full object-contain'}
             playsInline
             muted
           />
+          
+          {/* Canvas - shown during playback with skeleton overlay */}
           <canvas
             ref={canvasRef}
-            className="absolute inset-0 w-full h-full object-contain pointer-events-none"
-            style={{ display: phase === 'playback' ? 'block' : 'none' }}
+            className={phase === 'playback' ? 'w-full h-full object-contain' : 'hidden'}
           />
+          
+          {/* Custom playback controls */}
+          {phase === 'playback' && (
+            <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-4">
+              <div className="flex items-center gap-4">
+                <button
+                  onClick={togglePlayback}
+                  className="w-10 h-10 flex items-center justify-center bg-white/20 hover:bg-white/30 rounded-full transition text-white text-lg"
+                >
+                  {isPlaying ? '⏸' : '▶'}
+                </button>
+                <input
+                  type="range"
+                  min={startTime}
+                  max={endTime}
+                  step={0.1}
+                  value={currentTime}
+                  onChange={(e) => {
+                    const video = videoRef.current;
+                    if (video) {
+                      video.currentTime = parseFloat(e.target.value);
+                      renderPlayback();
+                    }
+                  }}
+                  className="flex-1 accent-cyan-500 h-2"
+                />
+                <span className="text-white text-sm font-mono w-20 text-right">
+                  {formatTime(currentTime)} / {formatTime(endTime - startTime)}
+                </span>
+              </div>
+            </div>
+          )}
 
           {/* Loading Models Overlay */}
           {phase === 'loading-models' && (
