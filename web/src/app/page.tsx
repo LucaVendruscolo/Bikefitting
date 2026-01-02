@@ -181,74 +181,93 @@ export default function HomePage() {
     }
   };
 
-  // Update frame data helper
-  const updateFrameDisplay = useCallback((frameIndex: number) => {
-    if (processedFrames.length > 0 && frameIndex < processedFrames.length) {
-      const frameData = processedFrames[frameIndex];
+  // Playback controls
+  const togglePlay = useCallback(() => {
+    if (processedFrames.length === 0 || !videoRef.current) return;
+    
+    const video = videoRef.current;
+    
+    if (isPlaying) {
+      video.pause();
+      setIsPlaying(false);
+    } else {
+      // Ensure video is at the right position
+      const frameData = processedFrames[playbackFrame];
+      if (frameData) {
+        video.currentTime = frameData.timestamp;
+      }
+      video.play();
+      setIsPlaying(true);
+    }
+  }, [isPlaying, processedFrames, playbackFrame]);
+
+  // Update current frame data when playback frame changes
+  useEffect(() => {
+    if (processedFrames.length > 0 && playbackFrame < processedFrames.length) {
+      const frameData = processedFrames[playbackFrame];
       setCurrentFrameData(frameData);
       setCurrentTime(frameData.timestamp);
       
       // Sync video position
-      if (videoRef.current) {
+      if (videoRef.current && !isPlaying) {
         videoRef.current.currentTime = frameData.timestamp;
       }
     }
-  }, [processedFrames]);
+  }, [playbackFrame, processedFrames, isPlaying]);
 
-  // Playback controls using requestAnimationFrame for smoother updates
-  const togglePlay = useCallback(() => {
-    if (processedFrames.length === 0) return;
-    
-    if (isPlaying) {
-      setIsPlaying(false);
-    } else {
-      setIsPlaying(true);
-    }
-  }, [isPlaying, processedFrames.length]);
-
-  // Handle playback animation loop
+  // Sync angles with video time during playback
   useEffect(() => {
-    if (!isPlaying || processedFrames.length === 0) return;
-    
-    const frameDelay = 1000 / outputFps;
-    let lastFrameTime = performance.now();
-    let currentFrame = playbackFrame;
-    let animationId: number;
-    
-    const animate = (now: number) => {
-      const elapsed = now - lastFrameTime;
+    const video = videoRef.current;
+    if (!video || processedFrames.length === 0) return;
+
+    const handleTimeUpdate = () => {
+      const currentVideoTime = video.currentTime;
+      setCurrentTime(currentVideoTime);
       
-      if (elapsed >= frameDelay) {
-        currentFrame++;
-        
-        if (currentFrame >= processedFrames.length) {
-          setIsPlaying(false);
-          setPlaybackFrame(0);
-          updateFrameDisplay(0);
-          return;
+      // Find the closest processed frame to current video time
+      let closestFrame = 0;
+      let minDiff = Infinity;
+      
+      for (let i = 0; i < processedFrames.length; i++) {
+        const diff = Math.abs(processedFrames[i].timestamp - currentVideoTime);
+        if (diff < minDiff) {
+          minDiff = diff;
+          closestFrame = i;
         }
-        
-        setPlaybackFrame(currentFrame);
-        updateFrameDisplay(currentFrame);
-        lastFrameTime = now;
       }
       
-      animationId = requestAnimationFrame(animate);
+      if (closestFrame !== playbackFrame) {
+        setPlaybackFrame(closestFrame);
+      }
+      setCurrentFrameData(processedFrames[closestFrame]);
     };
-    
-    animationId = requestAnimationFrame(animate);
-    
-    return () => {
-      cancelAnimationFrame(animationId);
-    };
-  }, [isPlaying, processedFrames.length, outputFps, playbackFrame, updateFrameDisplay]);
 
-  // Update display when manually changing frame (seeking)
+    video.addEventListener('timeupdate', handleTimeUpdate);
+    return () => video.removeEventListener('timeupdate', handleTimeUpdate);
+  }, [processedFrames, playbackFrame]);
+
+  // Sync isPlaying state with video events
   useEffect(() => {
-    if (!isPlaying && processedFrames.length > 0) {
-      updateFrameDisplay(playbackFrame);
-    }
-  }, [playbackFrame, processedFrames, isPlaying, updateFrameDisplay]);
+    const video = videoRef.current;
+    if (!video) return;
+
+    const handlePlay = () => setIsPlaying(true);
+    const handlePause = () => setIsPlaying(false);
+    const handleEnded = () => {
+      setIsPlaying(false);
+      setPlaybackFrame(0);
+    };
+
+    video.addEventListener('play', handlePlay);
+    video.addEventListener('pause', handlePause);
+    video.addEventListener('ended', handleEnded);
+
+    return () => {
+      video.removeEventListener('play', handlePlay);
+      video.removeEventListener('pause', handlePause);
+      video.removeEventListener('ended', handleEnded);
+    };
+  }, [videoUrl]);
 
   // Cleanup on unmount
   useEffect(() => {
