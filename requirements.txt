@@ -16,6 +16,7 @@ huggingface_hub
 tqdm
 matplotlib
 pillow
+optuna
 
 # OpenCV (pinned for numpy 1.26 compatibility)
 opencv-python==4.9.0.80

@@ -1,19 +1,15 @@
 """
-Bike Angle Detection - Method 3: Classification with Circular Soft Labels
+Bike Angle Detection - Classification with Circular Soft Labels
 
-This approach treats angle prediction as a CLASSIFICATION problem:
-1. Discretize angles into N bins (e.g., 72 bins = 5° each)
-2. Use soft Gaussian labels that wrap around the circle
-3. Cross-entropy loss naturally handles uncertainty
-4. Final angle = weighted average of bin centers
+Treats angle prediction as classification:
+1. Discretize angles into bins (default: 120 bins = 3° each)
+2. Soft Gaussian labels handle circular wrap-around at ±180°
+3. Predict angle via circular mean of bin probabilities
 
-Key advantages over regression:
-- Classification is often more stable and converges faster
-- Soft labels capture uncertainty and handle circular wrap-around
-- Can detect ambiguous orientations (multi-modal predictions)
-- Networks are very good at classification tasks
-
-Uses ConvNeXt-Tiny backbone (modern CNN that rivals Vision Transformers).
+Best parameters (from Optuna search):
+- backbone: convnext_tiny
+- bins: 120, sigma: 22°, lr: 3.4e-5, batch_size: 48
+- Expected: ~2° MAE
 
 Usage:
     python 2_train.py --data_dir data
@@ -49,19 +45,19 @@ def parse_args():
                         help="Path to training CSV (overrides data_dir/dataset.csv)")
     parser.add_argument("--val_csv", type=str, default=None,
                         help="Path to validation CSV")
-    parser.add_argument("--epochs", type=int, default=80,
+    parser.add_argument("--epochs", type=int, default=100,
                         help="Number of training epochs")
-    parser.add_argument("--batch_size", type=int, default=32,
+    parser.add_argument("--batch_size", type=int, default=48,
                         help="Batch size for training")
-    parser.add_argument("--lr", type=float, default=1e-4,
+    parser.add_argument("--lr", type=float, default=3.4e-5,
                         help="Learning rate")
     parser.add_argument("--img_size", type=int, default=224,
                         help="Input image size")
     parser.add_argument("--output_dir", type=str, default="models/classification_bins",
                         help="Output directory for checkpoints and logs")
-    parser.add_argument("--num_bins", type=int, default=72,
-                        help="Number of angle bins (72 = 5° per bin)")
-    parser.add_argument("--label_smoothing", type=float, default=18.0,
+    parser.add_argument("--num_bins", type=int, default=120,
+                        help="Number of angle bins (120 = 3° per bin)")
+    parser.add_argument("--label_smoothing", type=float, default=22.0,
                         help="Gaussian smoothing sigma in degrees for soft labels")
     parser.add_argument("--backbone", type=str, default="convnext_tiny",
                         choices=["convnext_tiny", "convnext_small", "resnet50", "efficientnet_b0"],
@@ -519,8 +515,8 @@ def main():
     
     print(f"Training samples: {len(train_dataset)}")
     print(f"Validation samples: {len(val_dataset)}")
-    print(f"Number of angle bins: {args.num_bins} ({360/args.num_bins:.1f}° per bin)")
-    print(f"Label smoothing sigma: {args.label_smoothing}°")
+    print(f"Number of angle bins: {args.num_bins} ({360/args.num_bins:.1f} deg per bin)")
+    print(f"Label smoothing sigma: {args.label_smoothing} deg")
     
     # Create dataloaders
     train_loader = DataLoader(
@@ -588,8 +584,8 @@ def main():
         
         scheduler.step()
         
-        print(f"  Train Loss: {train_loss:.4f}, Train Error: {train_error:.2f}°")
-        print(f"  Val Loss: {val_loss:.4f}, Val Error: {val_error:.2f}°")
+        print(f"  Train Loss: {train_loss:.4f}, Train Error: {train_error:.2f} deg")
+        print(f"  Val Loss: {val_loss:.4f}, Val Error: {val_error:.2f} deg")
         
         # Save best model
         if val_error < best_val_error:
@@ -602,7 +598,7 @@ def main():
                 'num_bins': args.num_bins,
                 'backbone': args.backbone,
             }, output_dir / "best_model.pt")
-            print(f"  ✓ New best model saved (error: {val_error:.2f}°)")
+            print(f"  [SAVED] New best model (error: {val_error:.2f} deg)")
             
             # Save plots
             plot_predictions(targets, preds, output_dir / "best_predictions.png")
@@ -633,8 +629,23 @@ def main():
     history_df.to_csv(output_dir / "training_history.csv", index=False)
     
     print(f"\n=== Training Complete ===")
-    print(f"Best validation error: {best_val_error:.2f}°")
+    print(f"Best validation error: {best_val_error:.2f} deg")
     print(f"Output directory: {output_dir}")
+    
+    # Save results.json for hyperparameter search to read
+    import json
+    results = {
+        "best_val_mae": float(best_val_error),
+        "final_val_mae": float(val_error),
+        "epochs": args.epochs,
+        "backbone": args.backbone,
+        "num_bins": args.num_bins,
+        "label_smoothing": args.label_smoothing,
+        "lr": args.lr,
+        "batch_size": args.batch_size,
+    }
+    with open(output_dir / "results.json", "w") as f:
+        json.dump(results, f, indent=2)
 
 
 if __name__ == "__main__":
