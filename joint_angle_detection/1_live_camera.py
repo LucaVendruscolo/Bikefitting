@@ -21,9 +21,15 @@ def parse_args():
 def main():
     args = parse_args()
 
-    # load the pose model (default: ./models/yolov8n-pose.pt)
-    default_model = Path(__file__).parent / "models" / "yolov8n-pose.pt"
+    # load the pose model (default: yolov8m-pose for better accuracy)
+    default_model = Path(__file__).parent / "models" / "yolov8m-pose.pt"
     model_path = Path(args.model) if args.model else default_model
+    
+    # Download if not exists
+    if not model_path.exists():
+        print(f"Model not found at {model_path}, will download yolov8m-pose.pt...")
+        model_path = "yolov8m-pose.pt"
+    
     model = YOLO(str(model_path))
 
     # get camera input

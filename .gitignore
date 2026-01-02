@@ -96,3 +96,14 @@ joint_angle_detection/models/
 *.MP4
 *.AVI
 *.MKV
+
+# --- Web app (Next.js) ---
+web/node_modules/
+web/.next/
+web/out/
+web/.vercel/
+web/public/models/*.onnx
+web/*.tsbuildinfo
+
+# Keep the .gitkeep in models folder
+!web/public/models/.gitkeep
