@@ -181,37 +181,10 @@ export default function HomePage() {
     }
   };
 
-  // Playback controls
-  const togglePlay = useCallback(() => {
-    if (processedFrames.length === 0) return;
-    
-    if (isPlaying) {
-      if (playbackIntervalRef.current) {
-        clearInterval(playbackIntervalRef.current);
-        playbackIntervalRef.current = null;
-      }
-      setIsPlaying(false);
-    } else {
-      setIsPlaying(true);
-      playbackIntervalRef.current = setInterval(() => {
-        setPlaybackFrame((prev) => {
-          const next = prev + 1;
-          if (next >= processedFrames.length) {
-            clearInterval(playbackIntervalRef.current!);
-            playbackIntervalRef.current = null;
-            setIsPlaying(false);
-            return 0;
-          }
-          return next;
-        });
-      }, 1000 / outputFps);
-    }
-  }, [isPlaying, processedFrames.length, outputFps]);
-
-  // Update current frame data when playback frame changes
-  useEffect(() => {
-    if (processedFrames.length > 0 && playbackFrame < processedFrames.length) {
-      const frameData = processedFrames[playbackFrame];
+  // Update frame data helper
+  const updateFrameDisplay = useCallback((frameIndex: number) => {
+    if (processedFrames.length > 0 && frameIndex < processedFrames.length) {
+      const frameData = processedFrames[frameIndex];
       setCurrentFrameData(frameData);
       setCurrentTime(frameData.timestamp);
       
@@ -220,7 +193,62 @@ export default function HomePage() {
         videoRef.current.currentTime = frameData.timestamp;
       }
     }
-  }, [playbackFrame, processedFrames]);
+  }, [processedFrames]);
+
+  // Playback controls using requestAnimationFrame for smoother updates
+  const togglePlay = useCallback(() => {
+    if (processedFrames.length === 0) return;
+    
+    if (isPlaying) {
+      setIsPlaying(false);
+    } else {
+      setIsPlaying(true);
+    }
+  }, [isPlaying, processedFrames.length]);
+
+  // Handle playback animation loop
+  useEffect(() => {
+    if (!isPlaying || processedFrames.length === 0) return;
+    
+    const frameDelay = 1000 / outputFps;
+    let lastFrameTime = performance.now();
+    let currentFrame = playbackFrame;
+    let animationId: number;
+    
+    const animate = (now: number) => {
+      const elapsed = now - lastFrameTime;
+      
+      if (elapsed >= frameDelay) {
+        currentFrame++;
+        
+        if (currentFrame >= processedFrames.length) {
+          setIsPlaying(false);
+          setPlaybackFrame(0);
+          updateFrameDisplay(0);
+          return;
+        }
+        
+        setPlaybackFrame(currentFrame);
+        updateFrameDisplay(currentFrame);
+        lastFrameTime = now;
+      }
+      
+      animationId = requestAnimationFrame(animate);
+    };
+    
+    animationId = requestAnimationFrame(animate);
+    
+    return () => {
+      cancelAnimationFrame(animationId);
+    };
+  }, [isPlaying, processedFrames.length, outputFps, playbackFrame, updateFrameDisplay]);
+
+  // Update display when manually changing frame (seeking)
+  useEffect(() => {
+    if (!isPlaying && processedFrames.length > 0) {
+      updateFrameDisplay(playbackFrame);
+    }
+  }, [playbackFrame, processedFrames, isPlaying, updateFrameDisplay]);
 
   // Cleanup on unmount
   useEffect(() => {
