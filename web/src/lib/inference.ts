@@ -319,53 +319,255 @@ function parseYoloPose(
 }
 
 /**
- * Parse segmentation output to bike mask
+ * Parse YOLOv8-seg output to bike mask
+ * output0: [1, 116, 8400] - detections (4 box + 80 classes + 32 mask coeffs)
+ * output1: [1, 32, 160, 160] - prototype masks
  */
 function parseSegmentation(results: any, origW: number, origH: number): Uint8Array | null {
-  // This is simplified - full implementation would parse YOLO seg output
-  // For now, return null to skip masking (will use full image)
-  // TODO: Implement proper segmentation parsing
-  
   const output0 = results.output0?.data as Float32Array;
   const output1 = results.output1?.data as Float32Array;
   
   if (!output0 || !output1) return null;
   
-  // YOLO seg has complex output format - for MVP, we'll skip masking
-  // and pass the full image to angle model
-  return null;
+  const numDetections = 8400;
+  const numClasses = 80;
+  const numMaskCoeffs = 32;
+  const protoH = 160;
+  const protoW = 160;
+  
+  // Find best bike detection (class 1=bicycle, 3=motorcycle)
+  let bestIdx = -1;
+  let bestConf = 0.3; // minimum threshold
+  
+  for (let i = 0; i < numDetections; i++) {
+    // Class scores start at index 4 (after cx, cy, w, h)
+    const bikeScore = output0[(4 + 1) * numDetections + i]; // class 1 (bicycle)
+    const motoScore = output0[(4 + 3) * numDetections + i]; // class 3 (motorcycle)
+    const score = Math.max(bikeScore, motoScore);
+    
+    if (score > bestConf) {
+      bestConf = score;
+      bestIdx = i;
+    }
+  }
+  
+  if (bestIdx === -1) return null;
+  
+  // Get bounding box for this detection
+  const cx = output0[0 * numDetections + bestIdx];
+  const cy = output0[1 * numDetections + bestIdx];
+  const w = output0[2 * numDetections + bestIdx];
+  const h = output0[3 * numDetections + bestIdx];
+  
+  // Get mask coefficients (last 32 values per detection)
+  const maskCoeffs = new Float32Array(numMaskCoeffs);
+  for (let j = 0; j < numMaskCoeffs; j++) {
+    maskCoeffs[j] = output0[(4 + numClasses + j) * numDetections + bestIdx];
+  }
+  
+  // Matrix multiply: coeffs [32] @ protos [32, 160*160] -> [160*160]
+  const maskFlat = new Float32Array(protoH * protoW);
+  for (let p = 0; p < protoH * protoW; p++) {
+    let sum = 0;
+    for (let c = 0; c < numMaskCoeffs; c++) {
+      sum += maskCoeffs[c] * output1[c * protoH * protoW + p];
+    }
+    // Sigmoid activation
+    maskFlat[p] = 1 / (1 + Math.exp(-sum));
+  }
+  
+  // Scale factor from 640 input to prototype size (160)
+  const inputSize = 640;
+  const scale = Math.min(inputSize / origW, inputSize / origH);
+  const scaledW = Math.round(origW * scale);
+  const scaledH = Math.round(origH * scale);
+  const offsetX = (inputSize - scaledW) / 2;
+  const offsetY = (inputSize - scaledH) / 2;
+  
+  // Convert box coords from input space (640) to proto space (160)
+  const protoScale = protoW / inputSize;
+  const boxX1 = Math.max(0, Math.floor((cx - w/2) * protoScale));
+  const boxY1 = Math.max(0, Math.floor((cy - h/2) * protoScale));
+  const boxX2 = Math.min(protoW, Math.ceil((cx + w/2) * protoScale));
+  const boxY2 = Math.min(protoH, Math.ceil((cy + h/2) * protoScale));
+  
+  // Create full-size mask
+  const mask = new Uint8Array(origW * origH);
+  
+  // Map proto mask to original image coordinates
+  for (let py = boxY1; py < boxY2; py++) {
+    for (let px = boxX1; px < boxX2; px++) {
+      const maskVal = maskFlat[py * protoW + px];
+      if (maskVal > 0.5) {
+        // Convert proto coord to input space
+        const inputX = px / protoScale;
+        const inputY = py / protoScale;
+        
+        // Convert input space to original image space
+        const origX = Math.round((inputX - offsetX) / scale);
+        const origY = Math.round((inputY - offsetY) / scale);
+        
+        if (origX >= 0 && origX < origW && origY >= 0 && origY < origH) {
+          mask[origY * origW + origX] = 255;
+        }
+      }
+    }
+  }
+  
+  // Dilate mask slightly (5 pixel equivalent)
+  const dilatedMask = dilateMask(mask, origW, origH, 5);
+  
+  return dilatedMask;
 }
 
 /**
- * Create masked bike image (matches 1_preprocess.py)
+ * Simple dilation of binary mask
+ */
+function dilateMask(mask: Uint8Array, w: number, h: number, radius: number): Uint8Array {
+  const result = new Uint8Array(w * h);
+  
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (mask[y * w + x] > 0) {
+        // Set all pixels in radius
+        for (let dy = -radius; dy <= radius; dy++) {
+          for (let dx = -radius; dx <= radius; dx++) {
+            const nx = x + dx;
+            const ny = y + dy;
+            if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
+              if (dx*dx + dy*dy <= radius*radius) {
+                result[ny * w + nx] = 255;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  
+  return result;
+}
+
+/**
+ * Create masked bike image (matches 1_preprocess.py exactly)
+ * 1. Apply mask (set non-bike pixels to black)
+ * 2. Find bounding box of mask
+ * 3. Make square with padding
+ * 4. Crop and resize to targetSize
  */
 function createMaskedBikeImage(
   imageData: ImageData,
   mask: Uint8Array | null,
   targetSize: number
 ): ImageData | null {
-  const { width, height } = imageData;
+  const { width, height, data } = imageData;
   
-  // Create temp canvas with original image
+  // If no mask, use center crop as fallback
+  if (!mask) {
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = width;
+    tempCanvas.height = height;
+    const tempCtx = tempCanvas.getContext('2d')!;
+    tempCtx.putImageData(imageData, 0, 0);
+    
+    const canvas = document.createElement('canvas');
+    canvas.width = targetSize;
+    canvas.height = targetSize;
+    const ctx = canvas.getContext('2d')!;
+    
+    const size = Math.min(width, height);
+    const sx = (width - size) / 2;
+    const sy = (height - size) / 2;
+    ctx.drawImage(tempCanvas, sx, sy, size, size, 0, 0, targetSize, targetSize);
+    return ctx.getImageData(0, 0, targetSize, targetSize);
+  }
+  
+  // Apply mask - set non-bike pixels to black (like cv2.bitwise_and)
+  const maskedData = new ImageData(width, height);
+  for (let i = 0; i < width * height; i++) {
+    if (mask[i] > 0) {
+      maskedData.data[i * 4] = data[i * 4];       // R
+      maskedData.data[i * 4 + 1] = data[i * 4 + 1]; // G
+      maskedData.data[i * 4 + 2] = data[i * 4 + 2]; // B
+      maskedData.data[i * 4 + 3] = 255;            // A
+    } else {
+      // Black background (like Python cv2.bitwise_and)
+      maskedData.data[i * 4] = 0;
+      maskedData.data[i * 4 + 1] = 0;
+      maskedData.data[i * 4 + 2] = 0;
+      maskedData.data[i * 4 + 3] = 255;
+    }
+  }
+  
+  // Find bounding box of mask (like cv2.findNonZero + boundingRect)
+  let minX = width, minY = height, maxX = 0, maxY = 0;
+  let hasPixels = false;
+  
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (mask[y * width + x] > 0) {
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+        hasPixels = true;
+      }
+    }
+  }
+  
+  if (!hasPixels) {
+    // No mask found, return black image
+    const canvas = document.createElement('canvas');
+    canvas.width = targetSize;
+    canvas.height = targetSize;
+    const ctx = canvas.getContext('2d')!;
+    ctx.fillStyle = 'black';
+    ctx.fillRect(0, 0, targetSize, targetSize);
+    return ctx.getImageData(0, 0, targetSize, targetSize);
+  }
+  
+  // Add padding (like Python pad=10)
+  const pad = 10;
+  let x = Math.max(0, minX - pad);
+  let y = Math.max(0, minY - pad);
+  let bw = Math.min(width - x, maxX - minX + 2 * pad);
+  let bh = Math.min(height - y, maxY - minY + 2 * pad);
+  
+  // Make square (like Python code)
+  if (bw > bh) {
+    const diff = bw - bh;
+    y = Math.max(0, y - Math.floor(diff / 2));
+    bh = bw;
+  } else {
+    const diff = bh - bw;
+    x = Math.max(0, x - Math.floor(diff / 2));
+    bw = bh;
+  }
+  
+  // Clamp to image bounds
+  if (y + bh > height) bh = height - y;
+  if (x + bw > width) bw = width - x;
+  
+  // Create canvas with masked image
   const tempCanvas = document.createElement('canvas');
   tempCanvas.width = width;
   tempCanvas.height = height;
   const tempCtx = tempCanvas.getContext('2d')!;
-  tempCtx.putImageData(imageData, 0, 0);
+  tempCtx.putImageData(maskedData, 0, 0);
   
-  // Output canvas
+  // Crop and resize
   const canvas = document.createElement('canvas');
   canvas.width = targetSize;
   canvas.height = targetSize;
   const ctx = canvas.getContext('2d')!;
   
-  // If no mask, use center crop as fallback (still works reasonably well)
-  // Center crop to square and resize
-  const size = Math.min(width, height);
-  const sx = (width - size) / 2;
-  const sy = (height - size) / 2;
+  // Fill with black first (in case crop is partially outside)
+  ctx.fillStyle = 'black';
+  ctx.fillRect(0, 0, targetSize, targetSize);
   
-  ctx.drawImage(tempCanvas, sx, sy, size, size, 0, 0, targetSize, targetSize);
+  // Draw cropped region
+  ctx.drawImage(tempCanvas, x, y, bw, bh, 0, 0, targetSize, targetSize);
+  
   return ctx.getImageData(0, 0, targetSize, targetSize);
 }
 
