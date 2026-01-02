@@ -1,8 +1,7 @@
 /**
- * Client-side inference using ONNX Runtime Web
+ * Client-side inference using ONNX Runtime Web (loaded from CDN)
  * 
  * This module handles all ML inference directly in the browser:
- * - Bike segmentation (YOLOv8-seg)
  * - Pose estimation (YOLOv8-pose)  
  * - Bike angle classification (ConvNeXT)
  */
@@ -38,23 +37,33 @@ interface BikeAngleConfig {
   };
 }
 
-// ONNX Runtime types (loaded dynamically)
-type InferenceSession = {
-  run: (feeds: Record<string, unknown>) => Promise<Record<string, { data: Float32Array; dims: number[] }>>;
-};
+// Global ONNX Runtime reference (loaded from CDN)
+declare global {
+  interface Window {
+    ort: OrtModule;
+  }
+}
 
-type OrtModule = {
+interface OrtTensor {
+  data: Float32Array;
+  dims: number[];
+}
+
+interface OrtSession {
+  run(feeds: Record<string, OrtTensor>): Promise<Record<string, OrtTensor>>;
+}
+
+interface OrtModule {
   InferenceSession: {
-    create: (path: string, options?: { executionProviders: string[] }) => Promise<InferenceSession>;
+    create(path: string, options?: { executionProviders: string[] }): Promise<OrtSession>;
   };
-  Tensor: new (type: string, data: Float32Array, dims: number[]) => unknown;
+  Tensor: new (type: string, data: Float32Array, dims: number[]) => OrtTensor;
   env: {
     wasm: {
-      numThreads: number;
       wasmPaths: string;
     };
   };
-};
+}
 
 // ============= COCO Keypoint Indices =============
 
@@ -78,13 +87,45 @@ const COCO_KEYPOINTS = {
   right_ankle: 16,
 };
 
+// ============= Load ONNX Runtime from CDN =============
+
+let ortLoadPromise: Promise<OrtModule> | null = null;
+
+async function loadOrt(): Promise<OrtModule> {
+  if (typeof window !== 'undefined' && window.ort) {
+    return window.ort;
+  }
+  
+  if (ortLoadPromise) {
+    return ortLoadPromise;
+  }
+  
+  ortLoadPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/ort.min.js';
+    script.async = true;
+    script.onload = () => {
+      if (window.ort) {
+        // Set WASM paths to CDN
+        window.ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/';
+        resolve(window.ort);
+      } else {
+        reject(new Error('ONNX Runtime failed to load'));
+      }
+    };
+    script.onerror = () => reject(new Error('Failed to load ONNX Runtime script'));
+    document.head.appendChild(script);
+  });
+  
+  return ortLoadPromise;
+}
+
 // ============= Model Manager =============
 
 class ModelManager {
   private ort: OrtModule | null = null;
-  private poseSession: InferenceSession | null = null;
-  private segSession: InferenceSession | null = null;
-  private bikeAngleSession: InferenceSession | null = null;
+  private poseSession: OrtSession | null = null;
+  private bikeAngleSession: OrtSession | null = null;
   private bikeAngleConfig: BikeAngleConfig | null = null;
   private isLoading = false;
   private loadPromise: Promise<void> | null = null;
@@ -112,58 +153,46 @@ class ModelManager {
     const basePath = '/models';
     
     try {
-      // Dynamically import ONNX Runtime (browser only)
+      // Load ONNX Runtime from CDN
       onProgress?.('Loading ONNX Runtime...', 5);
-      
-      // Dynamic import to avoid SSR issues
-      const ortModule = await import('onnxruntime-web');
-      this.ort = ortModule as unknown as OrtModule;
-      
-      // Configure ONNX Runtime for browser
-      this.ort.env.wasm.numThreads = 1; // Use single thread for compatibility
-      this.ort.env.wasm.wasmPaths = '/';
+      this.ort = await loadOrt();
 
       // Load bike angle config
-      onProgress?.('Loading configuration...', 10);
-      const configResponse = await fetch(`${basePath}/bike_angle_config.json`);
-      if (configResponse.ok) {
-        this.bikeAngleConfig = await configResponse.json();
+      onProgress?.('Loading configuration...', 15);
+      try {
+        const configResponse = await fetch(`${basePath}/bike_angle_config.json`);
+        if (configResponse.ok) {
+          this.bikeAngleConfig = await configResponse.json();
+        }
+      } catch (e) {
+        console.warn('Config not found:', e);
       }
 
       // Load pose model
-      onProgress?.('Loading pose detection model...', 25);
+      onProgress?.('Loading pose detection model (~13MB)...', 30);
       try {
         this.poseSession = await this.ort.InferenceSession.create(
           `${basePath}/yolov8-pose.onnx`,
           { executionProviders: ['wasm'] }
         );
+        onProgress?.('Pose model loaded!', 60);
       } catch (e) {
-        console.warn('Pose model not found, skipping:', e);
-      }
-
-      // Load segmentation model (optional)
-      onProgress?.('Loading bike segmentation model...', 55);
-      try {
-        this.segSession = await this.ort.InferenceSession.create(
-          `${basePath}/yolov8-seg.onnx`,
-          { executionProviders: ['wasm'] }
-        );
-      } catch (e) {
-        console.warn('Segmentation model not found, skipping:', e);
+        console.warn('Pose model not found:', e);
       }
 
       // Load bike angle model
-      onProgress?.('Loading bike angle model...', 85);
+      onProgress?.('Loading bike angle model (~97MB)...', 70);
       try {
         this.bikeAngleSession = await this.ort.InferenceSession.create(
           `${basePath}/bike_angle.onnx`,
           { executionProviders: ['wasm'] }
         );
+        onProgress?.('Bike angle model loaded!', 95);
       } catch (e) {
-        console.warn('Bike angle model not found, skipping:', e);
+        console.warn('Bike angle model not found:', e);
       }
 
-      onProgress?.('Models loaded!', 100);
+      onProgress?.('All models loaded!', 100);
     } catch (error) {
       console.error('Error loading models:', error);
       throw error;
@@ -182,15 +211,11 @@ class ModelManager {
     return this.bikeAngleConfig;
   }
 
-  getPoseSession(): InferenceSession | null {
+  getPoseSession(): OrtSession | null {
     return this.poseSession;
   }
 
-  getSegSession(): InferenceSession | null {
-    return this.segSession;
-  }
-
-  getBikeAngleSession(): InferenceSession | null {
+  getBikeAngleSession(): OrtSession | null {
     return this.bikeAngleSession;
   }
 }
@@ -199,12 +224,20 @@ export const modelManager = new ModelManager();
 
 // ============= Image Processing =============
 
+function createTensor(
+  ort: OrtModule,
+  data: Float32Array,
+  dims: number[]
+): OrtTensor {
+  return new ort.Tensor('float32', data, dims);
+}
+
 function imageDataToTensor(
   ort: OrtModule,
   imageData: ImageData,
   targetSize: number,
   normalize: { mean: number[]; std: number[] }
-): unknown {
+): OrtTensor {
   const { width, height, data } = imageData;
   
   // Create canvas to resize
@@ -236,7 +269,7 @@ function imageDataToTensor(
     tensorData[2 * targetSize * targetSize + i] = (b - normalize.mean[2]) / normalize.std[2];
   }
   
-  return new ort.Tensor('float32', tensorData, [1, 3, targetSize, targetSize]);
+  return createTensor(ort, tensorData, [1, 3, targetSize, targetSize]);
 }
 
 function videoFrameToImageData(video: HTMLVideoElement): ImageData {
@@ -253,18 +286,17 @@ function videoFrameToImageData(video: HTMLVideoElement): ImageData {
 async function detectPose(
   ort: OrtModule,
   imageData: ImageData,
-  session: InferenceSession
+  session: OrtSession
 ): Promise<{ keypoints: Keypoint[]; side: 'left' | 'right' | null }> {
   const inputSize = 640;
   const { width, height } = imageData;
   
-  // Prepare input tensor
+  // Prepare input tensor with letterbox
   const canvas = document.createElement('canvas');
   canvas.width = inputSize;
   canvas.height = inputSize;
   const ctx = canvas.getContext('2d')!;
   
-  // Letterbox resize
   const scale = Math.min(inputSize / width, inputSize / height);
   const newWidth = Math.round(width * scale);
   const newHeight = Math.round(height * scale);
@@ -291,7 +323,7 @@ async function detectPose(
     tensorData[2 * inputSize * inputSize + i] = resizedData.data[i * 4 + 2] / 255;
   }
   
-  const inputTensor = new ort.Tensor('float32', tensorData, [1, 3, inputSize, inputSize]);
+  const inputTensor = createTensor(ort, tensorData, [1, 3, inputSize, inputSize]);
   
   try {
     const results = await session.run({ images: inputTensor });
@@ -301,8 +333,6 @@ async function detectPose(
       return { keypoints: [], side: null };
     }
     
-    // Parse YOLO pose output
-    // Output shape: [1, 56, num_detections] where 56 = 5 (box) + 51 (17 keypoints * 3)
     const data = output.data;
     const numDetections = output.dims[2];
     
@@ -311,7 +341,7 @@ async function detectPose(
     let bestIdx = -1;
     
     for (let i = 0; i < numDetections; i++) {
-      const score = data[4 * numDetections + i]; // confidence at index 4
+      const score = data[4 * numDetections + i];
       if (score > bestScore) {
         bestScore = score;
         bestIdx = i;
@@ -322,7 +352,7 @@ async function detectPose(
       return { keypoints: [], side: null };
     }
     
-    // Extract keypoints (starting at index 5, 3 values per keypoint)
+    // Extract keypoints
     const keypoints: Keypoint[] = [];
     for (let k = 0; k < 17; k++) {
       const baseIdx = (5 + k * 3) * numDetections + bestIdx;
@@ -332,7 +362,7 @@ async function detectPose(
       keypoints.push({ x, y, confidence: conf });
     }
     
-    // Determine which side is more visible
+    // Determine visible side
     const leftConf = (
       keypoints[COCO_KEYPOINTS.left_shoulder].confidence +
       keypoints[COCO_KEYPOINTS.left_hip].confidence +
@@ -391,49 +421,21 @@ function computeJointAngles(keypoints: Keypoint[], side: 'left' | 'right'): Join
   };
 }
 
-// ============= Bike Segmentation (Simplified) =============
-
-async function segmentBike(
-  imageData: ImageData
-): Promise<{ masked: ImageData; success: boolean }> {
-  // Simplified: use center crop instead of full segmentation
-  // Full YOLO segmentation is complex to implement in browser
-  const size = 224;
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d')!;
-  
-  const tempCanvas = document.createElement('canvas');
-  tempCanvas.width = imageData.width;
-  tempCanvas.height = imageData.height;
-  const tempCtx = tempCanvas.getContext('2d')!;
-  tempCtx.putImageData(imageData, 0, 0);
-  
-  // Center crop
-  const cropSize = Math.min(imageData.width, imageData.height);
-  const sx = (imageData.width - cropSize) / 2;
-  const sy = (imageData.height - cropSize) / 2;
-  
-  ctx.drawImage(tempCanvas, sx, sy, cropSize, cropSize, 0, 0, size, size);
-  return { masked: ctx.getImageData(0, 0, size, size), success: true };
-}
-
 // ============= Bike Angle Prediction =============
 
 async function predictBikeAngle(
   ort: OrtModule,
-  maskedImage: ImageData,
-  session: InferenceSession,
+  imageData: ImageData,
+  session: OrtSession,
   config: BikeAngleConfig
 ): Promise<{ angle: number; confidence: number }> {
-  const inputTensor = imageDataToTensor(ort, maskedImage, config.input_size, config.normalization);
+  const inputTensor = imageDataToTensor(ort, imageData, config.input_size, config.normalization);
   
   try {
     const results = await session.run({ input: inputTensor });
     const probs = results.probabilities.data;
     
-    // Circular decoding (same as training)
+    // Circular decoding
     const numBins = config.num_bins;
     const binSize = 360 / numBins;
     
@@ -476,7 +478,7 @@ export async function processFrame(
   let detectedSide: 'left' | 'right' | null = null;
   let bikeAngle: number | null = null;
   let bikeConfidence: number | null = null;
-  let maskedBikeData: ImageData | null = null;
+  const maskedBikeData: ImageData | null = null;
   
   if (!ort) {
     return { jointAngles, bikeAngle, bikeConfidence, detectedSide, maskedBikeData };
@@ -492,19 +494,33 @@ export async function processFrame(
     }
   }
   
-  // Bike segmentation and angle prediction
+  // Bike angle prediction (using center crop)
   const bikeAngleSession = modelManager.getBikeAngleSession();
   const config = modelManager.getConfig();
   
   if (bikeAngleSession && config) {
-    const { masked, success } = await segmentBike(imageData);
-    maskedBikeData = masked;
+    // Center crop for bike angle
+    const size = config.input_size;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d')!;
     
-    if (success) {
-      const result = await predictBikeAngle(ort, masked, bikeAngleSession, config);
-      bikeAngle = result.angle;
-      bikeConfidence = result.confidence;
-    }
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = imageData.width;
+    tempCanvas.height = imageData.height;
+    const tempCtx = tempCanvas.getContext('2d')!;
+    tempCtx.putImageData(imageData, 0, 0);
+    
+    const cropSize = Math.min(imageData.width, imageData.height);
+    const sx = (imageData.width - cropSize) / 2;
+    const sy = (imageData.height - cropSize) / 2;
+    ctx.drawImage(tempCanvas, sx, sy, cropSize, cropSize, 0, 0, size, size);
+    
+    const croppedData = ctx.getImageData(0, 0, size, size);
+    const result = await predictBikeAngle(ort, croppedData, bikeAngleSession, config);
+    bikeAngle = result.angle;
+    bikeConfidence = result.confidence;
   }
   
   return {
