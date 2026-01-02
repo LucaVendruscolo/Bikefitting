@@ -106,19 +106,19 @@ def convert_yolo_models():
     output_dir = Path(__file__).parent / "public" / "models"
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Convert YOLOv8m-pose
-    print("\nConverting YOLOv8m-pose to ONNX...")
-    pose_model = YOLO("yolov8m-pose.pt")
-    pose_onnx_path = output_dir / "yolov8m-pose.onnx"
-    pose_model.export(format="onnx", imgsz=640, simplify=True)
-    shutil.move("yolov8m-pose.onnx", pose_onnx_path)
+    # Convert YOLOv8s-pose (smaller, fits in GitHub 100MB limit)
+    print("\nConverting YOLOv8s-pose to ONNX...")
+    pose_model = YOLO("yolov8s-pose.pt")
+    pose_onnx_path = output_dir / "yolov8s-pose.onnx"
+    pose_model.export(format="onnx", imgsz=640, simplify=False)
+    shutil.move("yolov8s-pose.onnx", pose_onnx_path)
     print(f"  Saved to: {pose_onnx_path}")
     
     # Convert YOLOv8n-seg for bike masking
     print("\nConverting YOLOv8n-seg to ONNX...")
     seg_model = YOLO("yolov8n-seg.pt")
     seg_onnx_path = output_dir / "yolov8n-seg.onnx"
-    seg_model.export(format="onnx", imgsz=640, simplify=True)
+    seg_model.export(format="onnx", imgsz=640, simplify=False)
     shutil.move("yolov8n-seg.onnx", seg_onnx_path)
     print(f"  Saved to: {seg_onnx_path}")
     
