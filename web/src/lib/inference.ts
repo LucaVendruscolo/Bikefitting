@@ -36,14 +36,12 @@ interface BikeAngleConfig {
 }
 
 // ============= Model URLs =============
-// Models hosted on GitHub Releases, accessed via CORS proxy
-const GITHUB_RELEASE_URL = 'https://github.com/LucaVendruscolo/Bikefitting/releases/download/models-v1';
-// Use corsproxy.io to bypass CORS restrictions
-const CORS_PROXY = 'https://corsproxy.io/?';
+// Models are proxied through our own API to avoid CORS issues
+// The API fetches from GitHub Releases and serves with proper headers
 const MODEL_URLS = {
-  poseModel: `${CORS_PROXY}${encodeURIComponent(`${GITHUB_RELEASE_URL}/yolov8-pose.onnx`)}`,
-  bikeAngleModel: `${CORS_PROXY}${encodeURIComponent(`${GITHUB_RELEASE_URL}/bike_angle.onnx`)}`,
-  bikeAngleConfig: `${CORS_PROXY}${encodeURIComponent(`${GITHUB_RELEASE_URL}/bike_angle_config.json`)}`,
+  poseModel: '/api/models/yolov8-pose.onnx',
+  bikeAngleModel: '/api/models/bike_angle.onnx',
+  bikeAngleConfig: '/api/models/bike_angle_config.json',
 };
 
 // Global ONNX Runtime reference (loaded from CDN)
