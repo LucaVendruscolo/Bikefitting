@@ -5,18 +5,9 @@
  * - YOLOv8m-pose: Body pose detection
  * - YOLOv8n-seg: Bike segmentation (for masking)
  * - ConvNeXt: Bike angle prediction
+ * 
+ * ONNX Runtime is loaded from CDN to avoid webpack bundling issues.
  */
-
-// Dynamic import for ONNX Runtime (client-side only)
-let ort: typeof import('onnxruntime-web') | null = null;
-
-async function getOrt() {
-  if (!ort) {
-    ort = await import('onnxruntime-web');
-    ort.env.wasm.wasmPaths = '/';
-  }
-  return ort;
-}
 
 // Model paths (relative to public folder)
 const MODEL_PATHS = {
@@ -35,6 +26,7 @@ export interface ModelState {
   poseSession: any | null;
   segSession: any | null;
   bikeAngleSession: any | null;
+  ort: any;
 }
 
 export interface FrameResults {
@@ -72,6 +64,34 @@ const KEYPOINTS = {
   right_ankle: 16,
 };
 
+// Global ONNX Runtime reference
+let ortInstance: any = null;
+
+/**
+ * Load ONNX Runtime from CDN
+ */
+async function loadOnnxRuntime(): Promise<any> {
+  if (ortInstance) return ortInstance;
+  
+  // Check if already loaded via script tag
+  if (typeof window !== 'undefined' && (window as any).ort) {
+    ortInstance = (window as any).ort;
+    return ortInstance;
+  }
+  
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.16.3/dist/ort.min.js';
+    script.async = true;
+    script.onload = () => {
+      ortInstance = (window as any).ort;
+      resolve(ortInstance);
+    };
+    script.onerror = () => reject(new Error('Failed to load ONNX Runtime'));
+    document.head.appendChild(script);
+  });
+}
+
 /**
  * Load all models
  */
@@ -82,31 +102,38 @@ export async function loadModels(
     poseSession: null,
     segSession: null,
     bikeAngleSession: null,
+    ort: null,
   };
 
   try {
-    // Get ONNX Runtime
-    const ortModule = await getOrt();
+    // Load ONNX Runtime from CDN
+    onProgress?.(0);
+    console.log('Loading ONNX Runtime...');
+    const ort = await loadOnnxRuntime();
+    state.ort = ort;
+    onProgress?.(10);
+    
+    // Configure WASM paths
+    ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.16.3/dist/';
     
     // Load pose model (largest, load first)
-    onProgress?.(0);
     console.log('Loading pose model...');
-    state.poseSession = await ortModule.InferenceSession.create(MODEL_PATHS.pose, {
-      executionProviders: ['webgl', 'wasm'],
+    state.poseSession = await ort.InferenceSession.create(MODEL_PATHS.pose, {
+      executionProviders: ['wasm'],
     });
     onProgress?.(40);
 
     // Load segmentation model
     console.log('Loading segmentation model...');
-    state.segSession = await ortModule.InferenceSession.create(MODEL_PATHS.segmentation, {
-      executionProviders: ['webgl', 'wasm'],
+    state.segSession = await ort.InferenceSession.create(MODEL_PATHS.segmentation, {
+      executionProviders: ['wasm'],
     });
     onProgress?.(70);
 
     // Load bike angle model
     console.log('Loading bike angle model...');
-    state.bikeAngleSession = await ortModule.InferenceSession.create(MODEL_PATHS.bikeAngle, {
-      executionProviders: ['webgl', 'wasm'],
+    state.bikeAngleSession = await ort.InferenceSession.create(MODEL_PATHS.bikeAngle, {
+      executionProviders: ['wasm'],
     });
     onProgress?.(100);
 
@@ -136,7 +163,7 @@ export async function processFrame(
   // Run pose detection
   if (models.poseSession) {
     try {
-      const poseResult = await runPoseDetection(imageData, models.poseSession);
+      const poseResult = await runPoseDetection(imageData, models.poseSession, models.ort);
       if (poseResult) {
         results.skeleton = poseResult.skeleton;
         results.jointAngles = poseResult.angles;
@@ -152,7 +179,8 @@ export async function processFrame(
       const bikeResult = await runBikeAnalysis(
         imageData,
         models.segSession,
-        models.bikeAngleSession
+        models.bikeAngleSession,
+        models.ort
       );
       results.bikeAngle = bikeResult.angle;
       results.bikeMask = bikeResult.mask;
@@ -169,13 +197,14 @@ export async function processFrame(
  */
 async function runPoseDetection(
   imageData: ImageData,
-  session: any
+  session: any,
+  ort: any
 ): Promise<{
   skeleton: { keypoints: Array<{ x: number; y: number; confidence: number }>; side: 'left' | 'right' | null };
   angles: { knee: number | null; hip: number | null; elbow: number | null };
 } | null> {
   // Preprocess image for YOLO (resize to 640x640, normalize)
-  const inputTensor = await preprocessForYolo(imageData, 640);
+  const inputTensor = preprocessForYolo(imageData, 640, ort);
   
   // Run inference
   const feeds = { images: inputTensor };
@@ -203,9 +232,8 @@ async function runPoseDetection(
 /**
  * Preprocess image for YOLO
  */
-async function preprocessForYolo(imageData: ImageData, size: number): Promise<any> {
-  const ortModule = await getOrt();
-  const { data, width, height } = imageData;
+function preprocessForYolo(imageData: ImageData, size: number, ort: any): any {
+  const { width, height } = imageData;
   
   // Create canvas for resizing
   const canvas = document.createElement('canvas');
@@ -245,7 +273,7 @@ async function preprocessForYolo(imageData: ImageData, size: number): Promise<an
     float32Data[2 * size * size + i] = b;
   }
   
-  return new ortModule.Tensor('float32', float32Data, [1, 3, size, size]);
+  return new ort.Tensor('float32', float32Data, [1, 3, size, size]);
 }
 
 /**
@@ -260,7 +288,6 @@ function parseYoloPoseOutput(
   // This is a simplified parser - real implementation needs proper NMS
   
   const numDetections = 8400;
-  const numOutputs = 56;
   
   let bestIdx = -1;
   let bestConf = 0;
@@ -386,12 +413,13 @@ function calculateAngle(
 async function runBikeAnalysis(
   imageData: ImageData,
   segSession: any,
-  angleSession: any
+  angleSession: any,
+  ort: any
 ): Promise<{ angle: number | null; mask: ImageData | null }> {
   // For now, just run the angle model on the whole image
   // TODO: Implement proper bike segmentation and masking
   
-  const inputTensor = await preprocessForBikeAngle(imageData);
+  const inputTensor = preprocessForBikeAngle(imageData, ort);
   
   const feeds = { input: inputTensor };
   const results = await angleSession.run(feeds);
@@ -408,8 +436,7 @@ async function runBikeAnalysis(
 /**
  * Preprocess image for bike angle model (224x224, ImageNet normalization)
  */
-async function preprocessForBikeAngle(imageData: ImageData): Promise<any> {
-  const ortModule = await getOrt();
+function preprocessForBikeAngle(imageData: ImageData, ort: any): any {
   const size = BIKE_ANGLE_CONFIG.inputSize;
   
   // Create canvas for resizing
@@ -445,7 +472,7 @@ async function preprocessForBikeAngle(imageData: ImageData): Promise<any> {
     float32Data[2 * size * size + i] = b;
   }
   
-  return new ortModule.Tensor('float32', float32Data, [1, 3, size, size]);
+  return new ort.Tensor('float32', float32Data, [1, 3, size, size]);
 }
 
 /**
@@ -475,4 +502,3 @@ function calculateAngleFromBins(logits: Float32Array): number {
   
   return Math.atan2(sinSum, cosSum) * 180 / Math.PI;
 }
-
