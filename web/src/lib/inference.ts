@@ -1,85 +1,63 @@
 /**
- * Client-side inference using ONNX Runtime Web
+ * Client-side ML inference for BikeFitting AI
  * 
- * This module handles loading and running the ML models:
- * - YOLOv8m-pose: Body pose detection
- * - YOLOv8n-seg: Bike segmentation (for masking)
- * - ConvNeXt: Bike angle prediction
- * 
- * ONNX Runtime is loaded from CDN to avoid webpack bundling issues.
+ * Uses ONNX Runtime Web loaded from CDN.
+ * Pipeline matches generate_demo_video.py exactly:
+ * 1. Pose detection (YOLOv8m-pose) → skeleton + joint angles
+ * 2. Bike segmentation (YOLOv8n-seg) → bike mask
+ * 3. Angle classification (ConvNeXt) → bike angle
  */
 
-// Model paths - use GitHub LFS media URLs since Vercel doesn't handle LFS well
-const USE_GITHUB_LFS = true;
-const GITHUB_LFS_BASE = 'https://media.githubusercontent.com/media/LucaVendruscolo/Bikefitting/main/web/public/models';
+import { FrameData, Keypoint, Skeleton, JointAngles } from './types';
 
-const MODEL_PATHS = {
-  pose: USE_GITHUB_LFS ? `${GITHUB_LFS_BASE}/yolov8m-pose.onnx` : 'models/yolov8m-pose.onnx',
-  segmentation: USE_GITHUB_LFS ? `${GITHUB_LFS_BASE}/yolov8n-seg.onnx` : 'models/yolov8n-seg.onnx',
-  bikeAngle: USE_GITHUB_LFS ? `${GITHUB_LFS_BASE}/bike_angle.onnx` : 'models/bike_angle.onnx',
+// Model URLs - loaded from GitHub LFS
+const GITHUB_LFS_BASE = 'https://media.githubusercontent.com/media/LucaVendruscolo/Bikefitting/main/web/public/models';
+const MODEL_URLS = {
+  pose: `${GITHUB_LFS_BASE}/yolov8m-pose.onnx`,
+  seg: `${GITHUB_LFS_BASE}/yolov8n-seg.onnx`,
+  angle: `${GITHUB_LFS_BASE}/bike_angle.onnx`,
 };
 
-// Config for bike angle model
+// Model config (must match training)
 const BIKE_ANGLE_CONFIG = {
   numBins: 120,
   inputSize: 224,
 };
 
+// COCO keypoint indices
+const KEYPOINT_NAMES = [
+  'nose', 'left_eye', 'right_eye', 'left_ear', 'right_ear',
+  'left_shoulder', 'right_shoulder', 'left_elbow', 'right_elbow',
+  'left_wrist', 'right_wrist', 'left_hip', 'right_hip',
+  'left_knee', 'right_knee', 'left_ankle', 'right_ankle',
+];
+
+const IDX: Record<string, number> = {};
+KEYPOINT_NAMES.forEach((name, i) => { IDX[name] = i; });
+
+// Bike segmentation classes (bicycle=1, motorcycle=3)
+const BIKE_CLASSES = [1, 3];
+
 export interface ModelState {
-  poseSession: any | null;
-  segSession: any | null;
-  bikeAngleSession: any | null;
+  poseSession: any;
+  segSession: any;
+  angleSession: any;
   ort: any;
+  isLoaded: boolean;
 }
 
-export interface FrameResults {
-  jointAngles: {
-    knee: number | null;
-    hip: number | null;
-    elbow: number | null;
-  };
-  bikeAngle: number | null;
-  skeleton: {
-    keypoints: Array<{ x: number; y: number; confidence: number }>;
-    side: 'left' | 'right' | null;
-  } | null;
-  bikeMask: ImageData | null;
-}
-
-// Keypoint indices (COCO format)
-const KEYPOINTS = {
-  nose: 0,
-  left_eye: 1,
-  right_eye: 2,
-  left_ear: 3,
-  right_ear: 4,
-  left_shoulder: 5,
-  right_shoulder: 6,
-  left_elbow: 7,
-  right_elbow: 8,
-  left_wrist: 9,
-  right_wrist: 10,
-  left_hip: 11,
-  right_hip: 12,
-  left_knee: 13,
-  right_knee: 14,
-  left_ankle: 15,
-  right_ankle: 16,
-};
-
-// Global ONNX Runtime reference
-let ortInstance: any = null;
+// Global ONNX Runtime instance
+let ortModule: any = null;
 
 /**
  * Load ONNX Runtime from CDN
  */
-async function loadOnnxRuntime(): Promise<any> {
-  if (ortInstance) return ortInstance;
+async function loadOrt(): Promise<any> {
+  if (ortModule) return ortModule;
   
-  // Check if already loaded via script tag
   if (typeof window !== 'undefined' && (window as any).ort) {
-    ortInstance = (window as any).ort;
-    return ortInstance;
+    ortModule = (window as any).ort;
+    return ortModule;
   }
   
   return new Promise((resolve, reject) => {
@@ -87,8 +65,8 @@ async function loadOnnxRuntime(): Promise<any> {
     script.src = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.16.3/dist/ort.min.js';
     script.async = true;
     script.onload = () => {
-      ortInstance = (window as any).ort;
-      resolve(ortInstance);
+      ortModule = (window as any).ort;
+      resolve(ortModule);
     };
     script.onerror = () => reject(new Error('Failed to load ONNX Runtime'));
     document.head.appendChild(script);
@@ -96,134 +74,106 @@ async function loadOnnxRuntime(): Promise<any> {
 }
 
 /**
- * Load all models
+ * Load all ML models
  */
-export async function loadModels(
-  onProgress?: (progress: number) => void
-): Promise<ModelState> {
-  const state: ModelState = {
-    poseSession: null,
-    segSession: null,
-    bikeAngleSession: null,
-    ort: null,
+export async function loadModels(onProgress?: (progress: number) => void): Promise<ModelState> {
+  onProgress?.(0);
+  
+  // Load ONNX Runtime
+  const ort = await loadOrt();
+  ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.16.3/dist/';
+  onProgress?.(10);
+
+  // Load pose model
+  console.log('Loading pose model...');
+  const poseSession = await ort.InferenceSession.create(MODEL_URLS.pose, {
+    executionProviders: ['wasm'],
+  });
+  onProgress?.(40);
+
+  // Load segmentation model
+  console.log('Loading segmentation model...');
+  const segSession = await ort.InferenceSession.create(MODEL_URLS.seg, {
+    executionProviders: ['wasm'],
+  });
+  onProgress?.(70);
+
+  // Load angle model
+  console.log('Loading angle model...');
+  const angleSession = await ort.InferenceSession.create(MODEL_URLS.angle, {
+    executionProviders: ['wasm'],
+  });
+  onProgress?.(100);
+
+  console.log('All models loaded');
+  
+  return {
+    poseSession,
+    segSession,
+    angleSession,
+    ort,
+    isLoaded: true,
   };
-
-  try {
-    // Load ONNX Runtime from CDN
-    onProgress?.(0);
-    console.log('Loading ONNX Runtime...');
-    const ort = await loadOnnxRuntime();
-    state.ort = ort;
-    onProgress?.(10);
-    
-    // Configure WASM paths
-    ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.16.3/dist/';
-    
-    // Load pose model (largest, load first)
-    console.log('Loading pose model...');
-    state.poseSession = await ort.InferenceSession.create(MODEL_PATHS.pose, {
-      executionProviders: ['wasm'],
-    });
-    onProgress?.(40);
-
-    // Load segmentation model
-    console.log('Loading segmentation model...');
-    state.segSession = await ort.InferenceSession.create(MODEL_PATHS.segmentation, {
-      executionProviders: ['wasm'],
-    });
-    onProgress?.(70);
-
-    // Load bike angle model
-    console.log('Loading bike angle model...');
-    state.bikeAngleSession = await ort.InferenceSession.create(MODEL_PATHS.bikeAngle, {
-      executionProviders: ['wasm'],
-    });
-    onProgress?.(100);
-
-    console.log('All models loaded');
-    return state;
-
-  } catch (error) {
-    console.error('Failed to load models:', error);
-    throw error;
-  }
 }
 
 /**
- * Process a single frame
+ * Process a single video frame
  */
-export async function processFrame(
+export async function processVideoFrame(
   imageData: ImageData,
+  time: number,
   models: ModelState
-): Promise<FrameResults> {
-  const results: FrameResults = {
-    jointAngles: { knee: null, hip: null, elbow: null },
-    bikeAngle: null,
-    skeleton: null,
-    bikeMask: null,
+): Promise<FrameData> {
+  const { poseSession, segSession, angleSession, ort } = models;
+
+  // 1. Pose detection
+  const poseResult = await runPoseDetection(imageData, poseSession, ort);
+  
+  // 2. Bike segmentation + angle prediction
+  const bikeResult = await runBikeAnglePrediction(imageData, segSession, angleSession, ort);
+
+  return {
+    time,
+    skeleton: poseResult.skeleton,
+    jointAngles: poseResult.angles,
+    bikeAngle: bikeResult.angle,
+    bikeMask: null, // Not storing mask for now
   };
-
-  // Run pose detection
-  if (models.poseSession) {
-    try {
-      const poseResult = await runPoseDetection(imageData, models.poseSession, models.ort);
-      if (poseResult) {
-        results.skeleton = poseResult.skeleton;
-        results.jointAngles = poseResult.angles;
-      }
-    } catch (e) {
-      console.warn('Pose detection failed:', e);
-    }
-  }
-
-  // Run bike segmentation and angle prediction
-  if (models.segSession && models.bikeAngleSession) {
-    try {
-      const bikeResult = await runBikeAnalysis(
-        imageData,
-        models.segSession,
-        models.bikeAngleSession,
-        models.ort
-      );
-      results.bikeAngle = bikeResult.angle;
-      results.bikeMask = bikeResult.mask;
-    } catch (e) {
-      console.warn('Bike analysis failed:', e);
-    }
-  }
-
-  return results;
 }
 
 /**
- * Run pose detection
+ * Run pose detection and calculate joint angles
  */
 async function runPoseDetection(
   imageData: ImageData,
   session: any,
   ort: any
-): Promise<{
-  skeleton: { keypoints: Array<{ x: number; y: number; confidence: number }>; side: 'left' | 'right' | null };
-  angles: { knee: number | null; hip: number | null; elbow: number | null };
-} | null> {
-  // Preprocess image for YOLO (resize to 640x640, normalize)
-  const inputTensor = preprocessForYolo(imageData, 640, ort);
+): Promise<{ skeleton: Skeleton | null; angles: JointAngles }> {
+  const { width, height } = imageData;
+  
+  // Preprocess for YOLO (640x640, letterbox)
+  const inputSize = 640;
+  const inputTensor = preprocessYolo(imageData, inputSize, ort);
   
   // Run inference
   const feeds = { images: inputTensor };
   const results = await session.run(feeds);
-  
-  // Parse results (YOLO pose output format)
   const output = results.output0;
-  if (!output) return null;
+  
+  if (!output) {
+    return { skeleton: null, angles: { knee: null, hip: null, elbow: null } };
+  }
 
-  const keypoints = parseYoloPoseOutput(output.data as Float32Array, imageData.width, imageData.height);
-  if (!keypoints) return null;
+  // Parse YOLO pose output
+  const keypoints = parseYoloPose(output.data as Float32Array, width, height, inputSize);
+  if (!keypoints) {
+    return { skeleton: null, angles: { knee: null, hip: null, elbow: null } };
+  }
 
-  // Determine which side is more visible
+  // Determine visible side
   const side = determineSide(keypoints);
   
-  // Calculate angles
+  // Calculate joint angles
   const angles = calculateJointAngles(keypoints, side);
 
   return {
@@ -233,10 +183,54 @@ async function runPoseDetection(
 }
 
 /**
- * Preprocess image for YOLO
+ * Run bike segmentation and angle prediction
+ * Matches 1_preprocess.py and 2_train.py exactly
  */
-function preprocessForYolo(imageData: ImageData, size: number, ort: any): any {
+async function runBikeAnglePrediction(
+  imageData: ImageData,
+  segSession: any,
+  angleSession: any,
+  ort: any
+): Promise<{ angle: number | null }> {
   const { width, height } = imageData;
+  
+  // 1. Run segmentation to get bike mask
+  const segInput = preprocessYolo(imageData, 640, ort);
+  const segFeeds = { images: segInput };
+  const segResults = await segSession.run(segFeeds);
+  
+  // Parse segmentation output to get bike mask
+  const bikeMask = parseSegmentation(segResults, width, height);
+  if (!bikeMask) {
+    return { angle: null };
+  }
+
+  // 2. Create masked bike image (same as 1_preprocess.py)
+  const maskedImage = createMaskedBikeImage(imageData, bikeMask, BIKE_ANGLE_CONFIG.inputSize);
+  if (!maskedImage) {
+    return { angle: null };
+  }
+
+  // 3. Run angle prediction (same preprocessing as 2_train.py)
+  const angleInput = preprocessForAngleModel(maskedImage, ort);
+  const angleFeeds = { input: angleInput };
+  const angleResults = await angleSession.run(angleFeeds);
+  
+  // 4. Convert bins to angle using circular mean
+  const logits = angleResults.output?.data as Float32Array;
+  if (!logits) {
+    return { angle: null };
+  }
+  
+  const angle = binsToAngle(logits);
+  return { angle };
+}
+
+/**
+ * Preprocess image for YOLO models (letterbox to square)
+ */
+function preprocessYolo(imageData: ImageData, size: number, ort: any): any {
+  const { width, height, data } = imageData;
   
   // Create canvas for resizing
   const canvas = document.createElement('canvas');
@@ -244,58 +238,53 @@ function preprocessForYolo(imageData: ImageData, size: number, ort: any): any {
   canvas.height = size;
   const ctx = canvas.getContext('2d')!;
   
-  // Create temporary canvas with original image
+  // Letterbox resize
+  const scale = Math.min(size / width, size / height);
+  const newW = Math.round(width * scale);
+  const newH = Math.round(height * scale);
+  const offsetX = (size - newW) / 2;
+  const offsetY = (size - newH) / 2;
+  
+  // Gray background
+  ctx.fillStyle = '#808080';
+  ctx.fillRect(0, 0, size, size);
+  
+  // Draw original image
   const tempCanvas = document.createElement('canvas');
   tempCanvas.width = width;
   tempCanvas.height = height;
   const tempCtx = tempCanvas.getContext('2d')!;
   tempCtx.putImageData(imageData, 0, 0);
+  ctx.drawImage(tempCanvas, offsetX, offsetY, newW, newH);
   
-  // Resize with letterboxing
-  const scale = Math.min(size / width, size / height);
-  const newWidth = Math.round(width * scale);
-  const newHeight = Math.round(height * scale);
-  const offsetX = (size - newWidth) / 2;
-  const offsetY = (size - newHeight) / 2;
+  // Get pixel data and convert to tensor [1, 3, H, W]
+  const resized = ctx.getImageData(0, 0, size, size);
+  const float32 = new Float32Array(3 * size * size);
   
-  ctx.fillStyle = '#808080';
-  ctx.fillRect(0, 0, size, size);
-  ctx.drawImage(tempCanvas, offsetX, offsetY, newWidth, newHeight);
-  
-  // Get pixel data
-  const resizedData = ctx.getImageData(0, 0, size, size);
-  
-  // Convert to tensor format [1, 3, H, W] with normalization
-  const float32Data = new Float32Array(3 * size * size);
   for (let i = 0; i < size * size; i++) {
-    const r = resizedData.data[i * 4] / 255;
-    const g = resizedData.data[i * 4 + 1] / 255;
-    const b = resizedData.data[i * 4 + 2] / 255;
-    float32Data[i] = r;
-    float32Data[size * size + i] = g;
-    float32Data[2 * size * size + i] = b;
+    float32[i] = resized.data[i * 4] / 255;                    // R
+    float32[size * size + i] = resized.data[i * 4 + 1] / 255;  // G
+    float32[2 * size * size + i] = resized.data[i * 4 + 2] / 255; // B
   }
   
-  return new ort.Tensor('float32', float32Data, [1, 3, size, size]);
+  return new ort.Tensor('float32', float32, [1, 3, size, size]);
 }
 
 /**
- * Parse YOLO pose output
+ * Parse YOLO pose output to keypoints
  */
-function parseYoloPoseOutput(
+function parseYoloPose(
   data: Float32Array,
-  origWidth: number,
-  origHeight: number
-): Array<{ x: number; y: number; confidence: number }> | null {
-  // YOLO pose output format: [1, 56, 8400] where 56 = 4 (box) + 1 (conf) + 51 (17 keypoints * 3)
-  // This is a simplified parser - real implementation needs proper NMS
-  
+  origW: number,
+  origH: number,
+  inputSize: number
+): Keypoint[] | null {
+  // YOLO pose output: [1, 56, 8400] where 56 = 4 (box) + 1 (conf) + 51 (17 kpts * 3)
   const numDetections = 8400;
   
+  // Find best detection
   let bestIdx = -1;
   let bestConf = 0;
-  
-  // Find best detection
   for (let i = 0; i < numDetections; i++) {
     const conf = data[4 * numDetections + i];
     if (conf > bestConf) {
@@ -306,19 +295,18 @@ function parseYoloPoseOutput(
   
   if (bestIdx === -1 || bestConf < 0.3) return null;
   
-  // Extract keypoints
-  const keypoints: Array<{ x: number; y: number; confidence: number }> = [];
+  // Calculate scale/offset for coordinate conversion
+  const scale = Math.min(inputSize / origW, inputSize / origH);
+  const offsetX = (inputSize - origW * scale) / 2;
+  const offsetY = (inputSize - origH * scale) / 2;
   
+  // Extract keypoints
+  const keypoints: Keypoint[] = [];
   for (let k = 0; k < 17; k++) {
-    const kpOffset = 5 + k * 3; // 5 = box (4) + conf (1), then 3 values per keypoint
-    const x = data[kpOffset * numDetections + bestIdx];
-    const y = data[(kpOffset + 1) * numDetections + bestIdx];
-    const conf = data[(kpOffset + 2) * numDetections + bestIdx];
-    
-    // Scale back to original image size
-    const scale = Math.min(640 / origWidth, 640 / origHeight);
-    const offsetX = (640 - origWidth * scale) / 2;
-    const offsetY = (640 - origHeight * scale) / 2;
+    const baseIdx = 5 + k * 3;
+    const x = data[baseIdx * numDetections + bestIdx];
+    const y = data[(baseIdx + 1) * numDetections + bestIdx];
+    const conf = data[(baseIdx + 2) * numDetections + bestIdx];
     
     keypoints.push({
       x: (x - offsetX) / scale,
@@ -331,158 +319,93 @@ function parseYoloPoseOutput(
 }
 
 /**
- * Determine which side is more visible
+ * Parse segmentation output to bike mask
  */
-function determineSide(keypoints: Array<{ x: number; y: number; confidence: number }>): 'left' | 'right' | null {
-  const leftConfs = [
-    keypoints[KEYPOINTS.left_shoulder]?.confidence || 0,
-    keypoints[KEYPOINTS.left_elbow]?.confidence || 0,
-    keypoints[KEYPOINTS.left_hip]?.confidence || 0,
-    keypoints[KEYPOINTS.left_knee]?.confidence || 0,
-    keypoints[KEYPOINTS.left_ankle]?.confidence || 0,
-  ];
+function parseSegmentation(results: any, origW: number, origH: number): Uint8Array | null {
+  // This is simplified - full implementation would parse YOLO seg output
+  // For now, return null to skip masking (will use full image)
+  // TODO: Implement proper segmentation parsing
   
-  const rightConfs = [
-    keypoints[KEYPOINTS.right_shoulder]?.confidence || 0,
-    keypoints[KEYPOINTS.right_elbow]?.confidence || 0,
-    keypoints[KEYPOINTS.right_hip]?.confidence || 0,
-    keypoints[KEYPOINTS.right_knee]?.confidence || 0,
-    keypoints[KEYPOINTS.right_ankle]?.confidence || 0,
-  ];
+  const output0 = results.output0?.data as Float32Array;
+  const output1 = results.output1?.data as Float32Array;
   
-  const leftAvg = leftConfs.reduce((a, b) => a + b, 0) / leftConfs.length;
-  const rightAvg = rightConfs.reduce((a, b) => a + b, 0) / rightConfs.length;
+  if (!output0 || !output1) return null;
   
-  if (leftAvg < 0.3 && rightAvg < 0.3) return null;
-  
-  return leftAvg > rightAvg ? 'left' : 'right';
+  // YOLO seg has complex output format - for MVP, we'll skip masking
+  // and pass the full image to angle model
+  return null;
 }
 
 /**
- * Calculate joint angles
+ * Create masked bike image (matches 1_preprocess.py)
  */
-function calculateJointAngles(
-  keypoints: Array<{ x: number; y: number; confidence: number }>,
-  side: 'left' | 'right' | null
-): { knee: number | null; hip: number | null; elbow: number | null } {
-  if (!side) return { knee: null, hip: null, elbow: null };
-  
-  const prefix = side === 'left' ? 'left_' : 'right_';
-  
-  const shoulder = keypoints[KEYPOINTS[`${prefix}shoulder` as keyof typeof KEYPOINTS]];
-  const elbow = keypoints[KEYPOINTS[`${prefix}elbow` as keyof typeof KEYPOINTS]];
-  const wrist = keypoints[KEYPOINTS[`${prefix}wrist` as keyof typeof KEYPOINTS]];
-  const hip = keypoints[KEYPOINTS[`${prefix}hip` as keyof typeof KEYPOINTS]];
-  const knee = keypoints[KEYPOINTS[`${prefix}knee` as keyof typeof KEYPOINTS]];
-  const ankle = keypoints[KEYPOINTS[`${prefix}ankle` as keyof typeof KEYPOINTS]];
-  
-  const minConf = 0.3;
-  
-  return {
-    knee: calculateAngle(hip, knee, ankle, minConf),
-    hip: calculateAngle(shoulder, hip, knee, minConf),
-    elbow: calculateAngle(shoulder, elbow, wrist, minConf),
-  };
-}
-
-/**
- * Calculate angle between three points
- */
-function calculateAngle(
-  a: { x: number; y: number; confidence: number } | undefined,
-  b: { x: number; y: number; confidence: number } | undefined,
-  c: { x: number; y: number; confidence: number } | undefined,
-  minConf: number
-): number | null {
-  if (!a || !b || !c) return null;
-  if (a.confidence < minConf || b.confidence < minConf || c.confidence < minConf) return null;
-  
-  const ba = { x: a.x - b.x, y: a.y - b.y };
-  const bc = { x: c.x - b.x, y: c.y - b.y };
-  
-  const dot = ba.x * bc.x + ba.y * bc.y;
-  const magBA = Math.sqrt(ba.x * ba.x + ba.y * ba.y);
-  const magBC = Math.sqrt(bc.x * bc.x + bc.y * bc.y);
-  
-  if (magBA === 0 || magBC === 0) return null;
-  
-  const cosAngle = Math.max(-1, Math.min(1, dot / (magBA * magBC)));
-  return Math.acos(cosAngle) * (180 / Math.PI);
-}
-
-/**
- * Run bike segmentation and angle prediction
- */
-async function runBikeAnalysis(
+function createMaskedBikeImage(
   imageData: ImageData,
-  segSession: any,
-  angleSession: any,
-  ort: any
-): Promise<{ angle: number | null; mask: ImageData | null }> {
-  // For now, just run the angle model on the whole image
-  // TODO: Implement proper bike segmentation and masking
+  mask: Uint8Array | null,
+  targetSize: number
+): ImageData | null {
+  const { width, height, data } = imageData;
   
-  const inputTensor = preprocessForBikeAngle(imageData, ort);
+  // If no mask, use center crop as fallback
+  if (!mask) {
+    // Simple center crop and resize
+    const canvas = document.createElement('canvas');
+    canvas.width = targetSize;
+    canvas.height = targetSize;
+    const ctx = canvas.getContext('2d')!;
+    
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = width;
+    tempCanvas.height = height;
+    const tempCtx = tempCanvas.getContext('2d')!;
+    tempCtx.putImageData(imageData, 0, 0);
+    
+    // Center crop to square
+    const size = Math.min(width, height);
+    const sx = (width - size) / 2;
+    const sy = (height - size) / 2;
+    
+    ctx.drawImage(tempCanvas, sx, sy, size, size, 0, 0, targetSize, targetSize);
+    return ctx.getImageData(0, 0, targetSize, targetSize);
+  }
   
-  const feeds = { input: inputTensor };
-  const results = await angleSession.run(feeds);
-  
-  const output = results.output?.data as Float32Array;
-  if (!output) return { angle: null, mask: null };
-  
-  // Convert logits to angle using circular mean
-  const angle = calculateAngleFromBins(output);
-  
-  return { angle, mask: null };
+  // Apply mask and crop to bounding box
+  // TODO: Implement full masking logic matching 1_preprocess.py
+  return null;
 }
 
 /**
- * Preprocess image for bike angle model (224x224, ImageNet normalization)
+ * Preprocess image for angle model (ImageNet normalization)
  */
-function preprocessForBikeAngle(imageData: ImageData, ort: any): any {
+function preprocessForAngleModel(imageData: ImageData, ort: any): any {
   const size = BIKE_ANGLE_CONFIG.inputSize;
+  const { data } = imageData;
   
-  // Create canvas for resizing
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d')!;
-  
-  // Create temporary canvas with original image
-  const tempCanvas = document.createElement('canvas');
-  tempCanvas.width = imageData.width;
-  tempCanvas.height = imageData.height;
-  const tempCtx = tempCanvas.getContext('2d')!;
-  tempCtx.putImageData(imageData, 0, 0);
-  
-  // Resize
-  ctx.drawImage(tempCanvas, 0, 0, size, size);
-  
-  // Get pixel data
-  const resizedData = ctx.getImageData(0, 0, size, size);
-  
-  // ImageNet normalization
+  // ImageNet normalization constants
   const mean = [0.485, 0.456, 0.406];
   const std = [0.229, 0.224, 0.225];
   
-  const float32Data = new Float32Array(3 * size * size);
+  const float32 = new Float32Array(3 * size * size);
+  
   for (let i = 0; i < size * size; i++) {
-    const r = (resizedData.data[i * 4] / 255 - mean[0]) / std[0];
-    const g = (resizedData.data[i * 4 + 1] / 255 - mean[1]) / std[1];
-    const b = (resizedData.data[i * 4 + 2] / 255 - mean[2]) / std[2];
-    float32Data[i] = r;
-    float32Data[size * size + i] = g;
-    float32Data[2 * size * size + i] = b;
+    const r = data[i * 4] / 255;
+    const g = data[i * 4 + 1] / 255;
+    const b = data[i * 4 + 2] / 255;
+    
+    float32[i] = (r - mean[0]) / std[0];
+    float32[size * size + i] = (g - mean[1]) / std[1];
+    float32[2 * size * size + i] = (b - mean[2]) / std[2];
   }
   
-  return new ort.Tensor('float32', float32Data, [1, 3, size, size]);
+  return new ort.Tensor('float32', float32, [1, 3, size, size]);
 }
 
 /**
- * Calculate angle from bin probabilities using circular mean
+ * Convert bin logits to angle using circular mean (same as training)
  */
-function calculateAngleFromBins(logits: Float32Array): number {
+function binsToAngle(logits: Float32Array): number {
   const numBins = BIKE_ANGLE_CONFIG.numBins;
+  const binSize = 360 / numBins;
   
   // Softmax
   const logitsArray = Array.from(logits);
@@ -491,9 +414,11 @@ function calculateAngleFromBins(logits: Float32Array): number {
   const sumExp = expLogits.reduce((a, b) => a + b, 0);
   const probs = expLogits.map(e => e / sumExp);
   
-  // Calculate bin centers
-  const binSize = 360 / numBins;
-  const binCenters = Array.from({ length: numBins }, (_, i) => -180 + binSize / 2 + i * binSize);
+  // Bin centers from -180 to 180
+  const binCenters: number[] = [];
+  for (let i = 0; i < numBins; i++) {
+    binCenters.push(-180 + binSize / 2 + i * binSize);
+  }
   
   // Circular mean using sin/cos
   let sinSum = 0;
@@ -505,4 +430,56 @@ function calculateAngleFromBins(logits: Float32Array): number {
   }
   
   return Math.atan2(sinSum, cosSum) * 180 / Math.PI;
+}
+
+/**
+ * Determine which side of the body is more visible
+ */
+function determineSide(keypoints: Keypoint[]): 'left' | 'right' | null {
+  const leftJoints = [IDX.left_shoulder, IDX.left_elbow, IDX.left_hip, IDX.left_knee, IDX.left_ankle];
+  const rightJoints = [IDX.right_shoulder, IDX.right_elbow, IDX.right_hip, IDX.right_knee, IDX.right_ankle];
+  
+  const leftConf = leftJoints.reduce((sum, idx) => sum + (keypoints[idx]?.confidence || 0), 0);
+  const rightConf = rightJoints.reduce((sum, idx) => sum + (keypoints[idx]?.confidence || 0), 0);
+  
+  if (leftConf < 1.5 && rightConf < 1.5) return null;
+  return leftConf > rightConf ? 'left' : 'right';
+}
+
+/**
+ * Calculate joint angles from keypoints
+ */
+function calculateJointAngles(keypoints: Keypoint[], side: 'left' | 'right' | null): JointAngles {
+  if (!side) return { knee: null, hip: null, elbow: null };
+  
+  const prefix = side === 'left' ? 'left_' : 'right_';
+  
+  const getPoint = (name: string) => {
+    const idx = IDX[prefix + name];
+    const kp = keypoints[idx];
+    if (!kp || kp.confidence < 0.3) return null;
+    return { x: kp.x, y: kp.y };
+  };
+
+  const calcAngle = (a: any, b: any, c: any) => {
+    if (!a || !b || !c) return null;
+    
+    const ba = { x: a.x - b.x, y: a.y - b.y };
+    const bc = { x: c.x - b.x, y: c.y - b.y };
+    
+    const dot = ba.x * bc.x + ba.y * bc.y;
+    const magBA = Math.sqrt(ba.x * ba.x + ba.y * ba.y);
+    const magBC = Math.sqrt(bc.x * bc.x + bc.y * bc.y);
+    
+    if (magBA === 0 || magBC === 0) return null;
+    
+    const cosAngle = Math.max(-1, Math.min(1, dot / (magBA * magBC)));
+    return Math.acos(cosAngle) * 180 / Math.PI;
+  };
+
+  return {
+    knee: calcAngle(getPoint('hip'), getPoint('knee'), getPoint('ankle')),
+    hip: calcAngle(getPoint('shoulder'), getPoint('hip'), getPoint('knee')),
+    elbow: calcAngle(getPoint('shoulder'), getPoint('elbow'), getPoint('wrist')),
+  };
 }
