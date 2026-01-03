@@ -13,7 +13,7 @@
 \usepackage{amsmath}
 \usepackage{amssymb}
 \usepackage{tikz}
-\usetikzlibrary{shapes.geometric, arrows, positioning, fit}
+\usetikzlibrary{shapes.geometric, arrows, positioning, fit, backgrounds}
 \usepackage{float}
 \usepackage{enumitem}
 \usepackage{fancyhdr}
@@ -46,20 +46,42 @@
 \lhead{\leftmark}
 \rfoot{Page \thepage}
 
-\title{%
-    \vspace{-2cm}
-    \textbf{BikeFit AI} \\
-    \large AI-Powered Bicycle Fitting Analysis System \\
-    \vspace{0.5cm}
-    \normalsize Technical Documentation
-}
-\author{Luca Vendruscolo}
-\date{\today}
-
 \begin{document}
 
-\maketitle
-\thispagestyle{empty}
+% Custom Title Page
+\begin{titlepage}
+    \centering
+    \vspace*{2cm}
+    
+    {\Huge\bfseries BikeFit AI\par}
+    \vspace{0.5cm}
+    {\Large\itshape AI-Powered Bicycle Fitting Analysis System\par}
+    
+    \vspace{1.5cm}
+    
+    \begin{tikzpicture}
+        \draw[line width=2pt, color=blue!60] (0,0) -- (12,0);
+    \end{tikzpicture}
+    
+    \vspace{1.5cm}
+    
+    {\Large Technical Documentation\par}
+    
+    \vspace{3cm}
+    
+    {\large
+    \begin{tabular}{rl}
+        \textbf{Version:} & 1.0 \\[0.3cm]
+        \textbf{Date:} & \today \\
+    \end{tabular}
+    \par}
+    
+    \vfill
+    
+    {\large Machine Learning Pipeline Documentation\par}
+    {\normalsize From Data Collection to Production Deployment\par}
+    
+\end{titlepage}
 
 \begin{abstract}
 This document provides a comprehensive technical overview of the BikeFit AI system, an end-to-end machine learning pipeline for analyzing cycling posture and bike angles from video footage. The system comprises four main components: a dataset creation tool for synchronizing video with IMU sensor data, a deep learning model for bike angle prediction, a real-time joint angle detection system, and a web application for user-facing video analysis. This documentation explains the architecture, data flow, and implementation details of each component.
@@ -103,49 +125,68 @@ The codebase is organized into the following main directories:
 
 \subsection{System Architecture}
 
-Figure~\ref{fig:architecture} illustrates the high-level architecture of the complete system.
+Figure~\ref{fig:architecture} illustrates the high-level architecture of the complete system, showing both the offline training pipeline (left) and the online inference pipeline (right). The trained ConvNeXt model bridges these two phases.
 
 \begin{figure}[H]
 \centering
 \begin{tikzpicture}[
-    node distance=1.5cm,
-    box/.style={rectangle, draw, rounded corners, minimum width=3cm, minimum height=1cm, align=center, fill=blue!10},
-    arrow/.style={->, thick, >=stealth}
+    node distance=1.8cm,
+    box/.style={rectangle, draw, rounded corners=8pt, minimum width=3.2cm, minimum height=1.2cm, align=center, font=\small, line width=0.8pt},
+    arrow/.style={->, thick, >=stealth, line width=1pt},
+    label/.style={font=\footnotesize\itshape, text=gray}
 ]
 
-% Training Pipeline (left side)
-\node[box, fill=orange!20] (imu) {IMU Sensor\\Data};
-\node[box, fill=orange!20, right=of imu] (video) {Training\\Videos};
-\node[box, fill=yellow!20, below=of imu, xshift=1.5cm] (dataset) {Dataset\\Builder};
-\node[box, fill=green!20, below=of dataset] (train) {Model\\Training};
-\node[box, fill=green!30, below=of train] (model) {Trained\\ConvNeXt};
+% ==================== TRAINING PIPELINE (Left) ====================
+% Background box for training
+\begin{scope}[on background layer]
+    \fill[orange!8, rounded corners=12pt] (-1.8,1.2) rectangle (4.8,-8.2);
+\end{scope}
 
-% Inference Pipeline (right side)
-\node[box, fill=purple!20, right=4cm of video] (user) {User\\Video};
-\node[box, fill=blue!20, below=of user] (frontend) {Next.js\\Frontend};
-\node[box, fill=blue!30, below=of frontend] (modal) {Modal GPU\\Backend};
-\node[box, fill=cyan!20, below=of modal] (results) {Analysis\\Results};
+% Title
+\node[font=\bfseries\large] at (1.5, 0.6) {Training Pipeline};
+\node[font=\small, text=gray] at (1.5, 0.1) {(Offline, One-time)};
 
-% Arrows - Training
-\draw[arrow] (imu) -- (dataset);
-\draw[arrow] (video) -- (dataset);
-\draw[arrow] (dataset) -- (train);
-\draw[arrow] (train) -- (model);
+% Nodes
+\node[box, fill=orange!25, draw=orange!60] (imu) at (0, -1) {IMU Sensor\\Data};
+\node[box, fill=orange!25, draw=orange!60] (video) at (3, -1) {Training\\Videos};
+\node[box, fill=yellow!30, draw=yellow!70] (dataset) at (1.5, -3) {Dataset\\Builder};
+\node[box, fill=green!25, draw=green!60] (train) at (1.5, -5) {Model\\Training};
+\node[box, fill=green!40, draw=green!70, line width=1.2pt] (model) at (1.5, -7) {Trained\\ConvNeXt};
 
-% Arrows - Inference
-\draw[arrow] (user) -- (frontend);
-\draw[arrow] (frontend) -- (modal);
-\draw[arrow] (modal) -- (results);
+% Arrows with labels
+\draw[arrow, color=orange!70] (imu) -- (dataset);
+\draw[arrow, color=orange!70] (video) -- (dataset);
+\draw[arrow, color=yellow!80!black] (dataset) -- node[right, label] {sync frames} (train);
+\draw[arrow, color=green!60!black] (train) -- node[right, label] {best weights} (model);
 
-% Model to inference
-\draw[arrow, dashed] (model) -| (modal);
+% ==================== INFERENCE PIPELINE (Right) ====================
+% Background box for inference
+\begin{scope}[on background layer]
+    \fill[blue!8, rounded corners=12pt] (6.2,1.2) rectangle (12.8,-8.2);
+\end{scope}
 
-% Labels
-\node[above=0.3cm of imu, xshift=1.5cm] {\textbf{Training Pipeline}};
-\node[above=0.3cm of user] {\textbf{Inference Pipeline}};
+% Title
+\node[font=\bfseries\large] at (9.5, 0.6) {Inference Pipeline};
+\node[font=\small, text=gray] at (9.5, 0.1) {(Online, Per-request)};
+
+% Nodes
+\node[box, fill=purple!20, draw=purple!50] (user) at (9.5, -1) {User\\Video Upload};
+\node[box, fill=blue!20, draw=blue!50] (frontend) at (9.5, -3) {Next.js Frontend\\(Vercel)};
+\node[box, fill=blue!35, draw=blue!60] (modal) at (9.5, -5) {Modal GPU Backend\\(YOLO + ConvNeXt)};
+\node[box, fill=cyan!25, draw=cyan!60] (results) at (9.5, -7) {Analysis Results\\+ Annotated Video};
+
+% Arrows with labels
+\draw[arrow, color=purple!60] (user) -- node[right, label] {upload} (frontend);
+\draw[arrow, color=blue!60] (frontend) -- node[right, label] {base64 + SSE} (modal);
+\draw[arrow, color=blue!70] (modal) -- node[right, label] {frame data} (results);
+
+% ==================== MODEL TRANSFER ====================
+% Dashed arrow from trained model to inference
+\draw[arrow, dashed, color=green!50!black, line width=1.2pt] 
+    (model.east) -- ++(1.5,0) |- node[above, pos=0.25, font=\footnotesize\itshape, text=green!50!black] {deployed model} (modal.west);
 
 \end{tikzpicture}
-\caption{High-level system architecture showing training and inference pipelines}
+\caption{System architecture overview. \textbf{Left:} The training pipeline creates labeled data from video-IMU synchronization and trains the angle classifier. \textbf{Right:} The inference pipeline processes user videos in real-time on cloud GPUs. The trained model (dashed arrow) connects both pipelines.}
 \label{fig:architecture}
 \end{figure}
 
@@ -235,29 +276,89 @@ Angle prediction is formulated as a classification problem rather than regressio
 
 \subsection{Circular Soft Labels}
 
-The key innovation is the use of \textbf{circular Gaussian soft labels}. For an angle $\theta$, the soft label for bin $i$ with center $c_i$ is:
+\subsubsection{The Problem with Standard Labels}
+
+Consider a bike at $179°$. With standard one-hot labels, the model learns that $179°$ is ``correct'' and all other angles are equally wrong. But intuitively:
+\begin{itemize}
+    \item $178°$ should be \textit{almost} correct (only $1°$ error)
+    \item $-179°$ should \textit{also} be almost correct (only $2°$ away, wrapping around the circle!)
+    \item $0°$ should be very wrong ($179°$ error)
+\end{itemize}
+
+Standard regression also fails because it doesn't understand that $-180°$ and $+180°$ represent the \textit{same} physical orientation.
+
+\subsubsection{The Solution: Circular Gaussian Soft Labels}
+
+Instead of assigning 100\% probability to a single bin, we spread the probability across nearby bins using a Gaussian distribution that \textbf{wraps around the circle}. This teaches the model that nearby angles are similar, even across the $\pm 180°$ boundary.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[scale=0.9]
+    % Draw the angle axis
+    \draw[thick, ->] (-5.5,0) -- (5.5,0) node[right] {Angle (°)};
+    \draw[thick, ->] (0,-0.5) -- (0,3.5) node[above] {Probability};
+    
+    % Tick marks
+    \foreach \x/\label in {-5/-150, -3.33/-100, -1.67/-50, 0/0, 1.67/50, 3.33/100, 5/150} {
+        \draw (\x, -0.1) -- (\x, 0.1);
+        \node[below, font=\tiny] at (\x, -0.1) {\label};
+    }
+    
+    % Standard one-hot label (red, dashed)
+    \draw[red, dashed, line width=1.5pt] (2.5, 0) -- (2.5, 2.8);
+    \node[red, font=\small] at (2.5, 3.2) {One-hot};
+    \fill[red] (2.5, 2.8) circle (3pt);
+    
+    % Soft Gaussian label (blue, solid) - centered at 75°
+    \draw[blue, line width=2pt, domain=-5:5, samples=100] 
+        plot (\x, {2.5*exp(-(\x-2.5)^2/1.5)});
+    \node[blue, font=\small] at (0.5, 2.2) {Soft label ($\sigma=22°$)};
+    
+    % Highlight the target angle
+    \draw[<-, thick] (2.5, -0.8) -- (2.5, -0.3);
+    \node[font=\small] at (2.5, -1.1) {Target: $75°$};
+    
+    % Show that nearby bins get probability
+    \draw[blue, <->, thick] (1.2, 0.6) -- (3.8, 0.6);
+    \node[blue, font=\tiny] at (2.5, 0.9) {nearby angles};
+    \node[blue, font=\tiny] at (2.5, 0.4) {share probability};
+\end{tikzpicture}
+\caption{Comparison of one-hot labels (red spike) vs.\ circular soft labels (blue curve). Soft labels assign partial probability to neighboring bins, teaching the model that $73°$ and $77°$ are almost as correct as $75°$.}
+\label{fig:softlabels}
+\end{figure}
+
+\subsubsection{Mathematical Formulation}
+
+The angle space $[-180°, +180°]$ is divided into $N$ bins (default: $N=120$, giving $3°$ per bin). For a ground truth angle $\theta$, the soft label probability for bin $i$ with center $c_i$ is:
 
 \begin{equation}
     p_i = \frac{1}{Z} \exp\left(-\frac{d_{\text{circ}}(\theta, c_i)^2}{2\sigma^2}\right)
 \end{equation}
 
-where $d_{\text{circ}}$ is the circular distance:
+The key is the \textbf{circular distance} function, which measures the shortest path around the circle:
 
 \begin{equation}
-    d_{\text{circ}}(\theta_1, \theta_2) = \text{atan2}(\sin(\theta_1 - \theta_2), \cos(\theta_1 - \theta_2))
+    d_{\text{circ}}(\theta_1, \theta_2) = \text{atan2}\big(\sin(\theta_1 - \theta_2), \cos(\theta_1 - \theta_2)\big)
 \end{equation}
 
-and $Z$ is the normalization constant ensuring $\sum_i p_i = 1$.
+This ensures that $d_{\text{circ}}(-179°, +179°) = 2°$, not $358°$. The normalization constant $Z = \sum_i \exp(\cdot)$ ensures probabilities sum to 1.
+
+\paragraph{Intuition:} The smoothing parameter $\sigma = 22°$ means bins within $\sim 22°$ of the true angle receive significant probability. This makes the model robust to small labeling errors and encourages learning continuous angle representations.
 
 \subsection{Prediction via Circular Mean}
 
-The final angle prediction uses a circular mean of the bin probabilities:
+At inference time, the model outputs a probability distribution over all bins. To convert this back to a single angle prediction, we compute the \textbf{circular mean}:
 
 \begin{equation}
     \hat{\theta} = \text{atan2}\left(\sum_i p_i \sin(c_i), \sum_i p_i \cos(c_i)\right)
 \end{equation}
 
-This correctly handles the wrap-around at $\pm 180°$.
+\paragraph{Why not just take argmax?} The argmax would give the single highest-probability bin. The circular mean is better because:
+\begin{enumerate}
+    \item It uses information from \textit{all} bins, not just the peak
+    \item It correctly handles wrap-around (if probability is split between $-179°$ and $+179°$, the mean is $180°$, not $0°$)
+    \item It provides sub-bin precision (can predict $74.3°$, not just bin centers)
+\end{enumerate}
 
 \subsection{Training Pipeline}
 
