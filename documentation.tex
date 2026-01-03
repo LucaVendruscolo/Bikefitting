@@ -1,0 +1,651 @@
+\documentclass[12pt,a4paper]{article}
+
+% Packages
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{tikz}
+\usetikzlibrary{shapes.geometric, arrows, positioning, fit}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+
+% Code listing style
+\lstdefinestyle{code}{
+    backgroundcolor=\color{gray!10},
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    keywordstyle=\color{blue},
+    commentstyle=\color{green!50!black},
+    stringstyle=\color{orange},
+}
+
+% Hyperref setup
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=cyan,
+}
+
+% Header/Footer
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{BikeFit AI Documentation}
+\lhead{\leftmark}
+\rfoot{Page \thepage}
+
+\title{%
+    \vspace{-2cm}
+    \textbf{BikeFit AI} \\
+    \large AI-Powered Bicycle Fitting Analysis System \\
+    \vspace{0.5cm}
+    \normalsize Technical Documentation
+}
+\author{Luca Vendruscolo}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{empty}
+
+\begin{abstract}
+This document provides a comprehensive technical overview of the BikeFit AI system, an end-to-end machine learning pipeline for analyzing cycling posture and bike angles from video footage. The system comprises four main components: a dataset creation tool for synchronizing video with IMU sensor data, a deep learning model for bike angle prediction, a real-time joint angle detection system, and a web application for user-facing video analysis. This documentation explains the architecture, data flow, and implementation details of each component.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% ============================================================================
+\section{System Overview}
+% ============================================================================
+
+The BikeFit AI system is designed to analyze cycling videos and provide objective measurements of rider posture and bike orientation. The system leverages computer vision and deep learning to:
+
+\begin{itemize}
+    \item Detect and track the cyclist's body joints (shoulders, elbows, hips, knees, ankles)
+    \item Calculate joint angles (knee flexion, hip angle, elbow angle)
+    \item Segment the bicycle from the video frame
+    \item Predict the bike's tilt angle relative to the camera
+\end{itemize}
+
+\subsection{Repository Structure}
+
+The codebase is organized into the following main directories:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Directory} & \textbf{Purpose} \\
+\midrule
+\texttt{create\_labeled\_dataset/} & GUI tool for creating training datasets \\
+\texttt{bike\_angle\_detection\_model/} & Training and inference for bike angle prediction \\
+\texttt{joint\_angle\_detection/} & Real-time webcam-based joint angle detection \\
+\texttt{bikefitting-web/} & Production web application (frontend + backend) \\
+\texttt{sam3/} & External segmentation model (SAM3, installed editable) \\
+\bottomrule
+\end{tabular}
+\caption{Main directory structure of the BikeFit AI repository}
+\end{table}
+
+\subsection{System Architecture}
+
+Figure~\ref{fig:architecture} illustrates the high-level architecture of the complete system.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=1.5cm,
+    box/.style={rectangle, draw, rounded corners, minimum width=3cm, minimum height=1cm, align=center, fill=blue!10},
+    arrow/.style={->, thick, >=stealth}
+]
+
+% Training Pipeline (left side)
+\node[box, fill=orange!20] (imu) {IMU Sensor\\Data};
+\node[box, fill=orange!20, right=of imu] (video) {Training\\Videos};
+\node[box, fill=yellow!20, below=of imu, xshift=1.5cm] (dataset) {Dataset\\Builder};
+\node[box, fill=green!20, below=of dataset] (train) {Model\\Training};
+\node[box, fill=green!30, below=of train] (model) {Trained\\ConvNeXt};
+
+% Inference Pipeline (right side)
+\node[box, fill=purple!20, right=4cm of video] (user) {User\\Video};
+\node[box, fill=blue!20, below=of user] (frontend) {Next.js\\Frontend};
+\node[box, fill=blue!30, below=of frontend] (modal) {Modal GPU\\Backend};
+\node[box, fill=cyan!20, below=of modal] (results) {Analysis\\Results};
+
+% Arrows - Training
+\draw[arrow] (imu) -- (dataset);
+\draw[arrow] (video) -- (dataset);
+\draw[arrow] (dataset) -- (train);
+\draw[arrow] (train) -- (model);
+
+% Arrows - Inference
+\draw[arrow] (user) -- (frontend);
+\draw[arrow] (frontend) -- (modal);
+\draw[arrow] (modal) -- (results);
+
+% Model to inference
+\draw[arrow, dashed] (model) -| (modal);
+
+% Labels
+\node[above=0.3cm of imu, xshift=1.5cm] {\textbf{Training Pipeline}};
+\node[above=0.3cm of user] {\textbf{Inference Pipeline}};
+
+\end{tikzpicture}
+\caption{High-level system architecture showing training and inference pipelines}
+\label{fig:architecture}
+\end{figure}
+
+% ============================================================================
+\section{Dataset Creation (\texttt{create\_labeled\_dataset/})}
+% ============================================================================
+
+The dataset creation module provides a graphical user interface (GUI) for synchronizing video recordings with IMU (Inertial Measurement Unit) sensor data to create labeled training datasets.
+
+\subsection{Purpose}
+
+To train a model that predicts bike angles, we need ground truth labels. These labels come from an IMU sensor attached to the bicycle that records the actual orientation. The challenge is synchronizing the video frames with the IMU timestamps.
+
+\subsection{Input Requirements}
+
+\begin{itemize}
+    \item \textbf{Videos}: Cycling footage placed in \texttt{create\_labeled\_dataset/videos/}
+    \item \textbf{IMU Data}: CSV files from the IMU sensor in \texttt{create\_labeled\_dataset/imu\_runs/}
+\end{itemize}
+
+\subsection{Synchronization Process}
+
+The synchronization workflow involves:
+
+\begin{enumerate}
+    \item \textbf{Video Selection}: User selects a video file from the interface
+    \item \textbf{Time Reference}: User identifies a frame where a clock/phone time is visible
+    \item \textbf{IMU Matching}: The system automatically finds the corresponding IMU recording based on the timestamp
+    \item \textbf{Sync Point}: User marks the exact frame that corresponds to the IMU start time
+    \item \textbf{Trim Points}: Optional start/end trim points to exclude unusable footage
+\end{enumerate}
+
+\subsection{Output Format}
+
+The tool generates:
+
+\begin{itemize}
+    \item \texttt{synchronized\_dataset.csv}: Contains frame paths and corresponding bike angles
+    \item \texttt{frames/}: Directory of extracted video frames
+\end{itemize}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Column} & \textbf{Type} & \textbf{Description} \\
+\midrule
+\texttt{frame\_path} & string & Relative path to the extracted frame image \\
+\texttt{bike\_angle\_deg} & float & Ground truth angle in degrees $[-180, 180]$ \\
+\texttt{sync\_time\_diff\_ms} & float & Synchronization quality metric \\
+\bottomrule
+\end{tabular}
+\caption{Output CSV schema for the synchronized dataset}
+\end{table}
+
+\subsection{Key Files}
+
+\begin{itemize}
+    \item \texttt{1\_build\_dataset.py}: Main entry point, launches the GUI
+    \item \texttt{dataset\_builder.py}: Core logic for video-IMU synchronization
+\end{itemize}
+
+% ============================================================================
+\section{Bike Angle Detection Model (\texttt{bike\_angle\_detection\_model/})}
+% ============================================================================
+
+This module implements the deep learning pipeline for predicting the camera-relative bike angle from video frames.
+
+\subsection{Model Architecture}
+
+The bike angle prediction uses a two-stage approach:
+
+\begin{enumerate}
+    \item \textbf{Bike Segmentation}: YOLOv8n-seg isolates the bicycle pixels
+    \item \textbf{Angle Classification}: ConvNeXt-Tiny classifies the masked bike image into angle bins
+\end{enumerate}
+
+\subsubsection{Why Classification over Regression?}
+
+Angle prediction is formulated as a classification problem rather than regression because:
+
+\begin{itemize}
+    \item Angles are circular: $-180°$ and $+180°$ are the same orientation
+    \item Classification with soft labels naturally handles circular wrap-around
+    \item The model outputs a probability distribution, enabling uncertainty estimation
+\end{itemize}
+
+\subsection{Circular Soft Labels}
+
+The key innovation is the use of \textbf{circular Gaussian soft labels}. For an angle $\theta$, the soft label for bin $i$ with center $c_i$ is:
+
+\begin{equation}
+    p_i = \frac{1}{Z} \exp\left(-\frac{d_{\text{circ}}(\theta, c_i)^2}{2\sigma^2}\right)
+\end{equation}
+
+where $d_{\text{circ}}$ is the circular distance:
+
+\begin{equation}
+    d_{\text{circ}}(\theta_1, \theta_2) = \text{atan2}(\sin(\theta_1 - \theta_2), \cos(\theta_1 - \theta_2))
+\end{equation}
+
+and $Z$ is the normalization constant ensuring $\sum_i p_i = 1$.
+
+\subsection{Prediction via Circular Mean}
+
+The final angle prediction uses a circular mean of the bin probabilities:
+
+\begin{equation}
+    \hat{\theta} = \text{atan2}\left(\sum_i p_i \sin(c_i), \sum_i p_i \cos(c_i)\right)
+\end{equation}
+
+This correctly handles the wrap-around at $\pm 180°$.
+
+\subsection{Training Pipeline}
+
+\begin{enumerate}
+    \item \textbf{Preprocessing} (\texttt{1\_preprocess.py}):
+    \begin{itemize}
+        \item Load each frame from the dataset
+        \item Run YOLOv8n-seg to detect and mask the bicycle
+        \item Crop to a square region around the bike
+        \item Resize to $224 \times 224$ pixels
+        \item Save masked images to \texttt{data/frames/}
+    \end{itemize}
+    
+    \item \textbf{Training} (\texttt{2\_train.py}):
+    \begin{itemize}
+        \item Load masked images with corresponding angle labels
+        \item Split into training (80\%) and validation (20\%) sets
+        \item Train ConvNeXt-Tiny backbone with custom classification head
+        \item Use cross-entropy loss against soft labels
+        \item Save best model based on validation MAE
+    \end{itemize}
+    
+    \item \textbf{Inference} (\texttt{3\_inference.py}):
+    \begin{itemize}
+        \item Load trained model
+        \item Process single images or batch CSV files
+        \item Output predicted angles with confidence scores
+    \end{itemize}
+\end{enumerate}
+
+\subsection{Hyperparameters}
+
+The following hyperparameters were optimized via Optuna search:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}llr@{}}
+\toprule
+\textbf{Parameter} & \textbf{Description} & \textbf{Value} \\
+\midrule
+Backbone & CNN architecture & ConvNeXt-Tiny \\
+Number of bins & Angle discretization & 120 (3° per bin) \\
+Label smoothing ($\sigma$) & Gaussian spread & 22° \\
+Learning rate & Adam optimizer & $3.4 \times 10^{-5}$ \\
+Batch size & Training batch size & 48 \\
+Epochs & Maximum training epochs & 100 \\
+\bottomrule
+\end{tabular}
+\caption{Optimized hyperparameters for bike angle classification}
+\end{table}
+
+\subsection{Performance}
+
+The model achieves approximately \textbf{2° Mean Absolute Error (MAE)} on the validation set.
+
+% ============================================================================
+\section{Joint Angle Detection (\texttt{joint\_angle\_detection/})}
+% ============================================================================
+
+This module provides real-time joint angle detection from a webcam feed using YOLOv8 pose estimation.
+
+\subsection{Functionality}
+
+The system:
+
+\begin{enumerate}
+    \item Captures frames from a webcam or video source
+    \item Runs YOLOv8m-pose to detect 17 body keypoints
+    \item Calculates three primary joint angles on the detected side
+    \item Overlays the skeleton and angle measurements on the video
+\end{enumerate}
+
+\subsection{Measured Angles}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Angle} & \textbf{Joints Involved} & \textbf{Significance} \\
+\midrule
+Knee angle & Hip → Knee → Ankle & Pedaling efficiency, saddle height \\
+Hip angle & Shoulder → Hip → Knee & Torso position, aerodynamics \\
+Elbow angle & Shoulder → Elbow → Wrist & Arm position, handlebar reach \\
+\bottomrule
+\end{tabular}
+\caption{Joint angles calculated by the detection system}
+\end{table}
+
+\subsection{Angle Calculation}
+
+For three points $A$, $B$, $C$, the angle $\angle ABC$ is calculated as:
+
+\begin{equation}
+    \angle ABC = \arccos\left(\frac{\vec{BA} \cdot \vec{BC}}{|\vec{BA}| \cdot |\vec{BC}|}\right)
+\end{equation}
+
+where $\vec{BA} = A - B$ and $\vec{BC} = C - B$.
+
+\subsection{Side Detection}
+
+The system automatically determines whether the left or right side of the body is facing the camera by counting visible keypoints on each side. The side with more high-confidence keypoints is selected for angle calculation.
+
+\subsection{Usage}
+
+\begin{lstlisting}[style=code, language=bash]
+cd joint_angle_detection
+python 1_live_camera.py --source 0 --min_conf 0.5
+\end{lstlisting}
+
+Options:
+\begin{itemize}
+    \item \texttt{--source}: Camera index (0 for default webcam)
+    \item \texttt{--side}: Force left/right side (default: auto)
+    \item \texttt{--min\_conf}: Minimum keypoint confidence threshold
+\end{itemize}
+
+% ============================================================================
+\section{Web Application (\texttt{bikefitting-web/})}
+% ============================================================================
+
+The web application provides a user-friendly interface for video analysis, combining all AI models into a single production-ready service.
+
+\subsection{Architecture Overview}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=2cm,
+    box/.style={rectangle, draw, rounded corners, minimum width=3.5cm, minimum height=1.2cm, align=center},
+    arrow/.style={->, thick, >=stealth}
+]
+
+\node[box, fill=blue!15] (browser) {Browser\\(User's Device)};
+\node[box, fill=green!15, right=of browser] (vercel) {Vercel\\(Next.js Frontend)};
+\node[box, fill=orange!15, right=of vercel] (modal) {Modal\\(GPU Backend)};
+
+\draw[arrow] (browser) -- node[above, font=\small] {HTTPS} (vercel);
+\draw[arrow] (vercel) -- node[above, font=\small] {SSE} (modal);
+
+\node[below=0.5cm of browser, font=\small] {Upload video\\View results};
+\node[below=0.5cm of vercel, font=\small] {Serve UI\\Proxy API};
+\node[below=0.5cm of modal, font=\small] {YOLO + ConvNeXt\\GPU Processing};
+
+\end{tikzpicture}
+\caption{Web application architecture}
+\end{figure}
+
+\subsection{Frontend (\texttt{bikefitting-web/frontend/})}
+
+The frontend is built with \textbf{Next.js 15} and \textbf{React 19}, deployed on Vercel.
+
+\subsubsection{Key Components}
+
+\begin{itemize}
+    \item \texttt{src/app/page.tsx}: Main application page, orchestrates the upload and results flow
+    \item \texttt{src/components/VideoUploader.tsx}: Handles file selection, preview, settings, and upload progress
+    \item \texttt{src/components/ResultsViewer.tsx}: Displays processed video with synchronized live angle data
+\end{itemize}
+
+\subsubsection{Features}
+
+\begin{itemize}
+    \item Drag-and-drop video upload
+    \item Time range selection with visual timeline
+    \item Adjustable output FPS (5-30)
+    \item Real-time processing progress via Server-Sent Events (SSE)
+    \item Synchronized live angle display during video playback
+    \item Video download capability
+\end{itemize}
+
+\subsubsection{Technology Stack}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Technology} & \textbf{Purpose} \\
+\midrule
+Next.js 15 & React framework with App Router \\
+React 19 & UI component library \\
+TypeScript & Type-safe JavaScript \\
+Tailwind CSS & Utility-first styling \\
+Lucide React & Icon library \\
+\bottomrule
+\end{tabular}
+\caption{Frontend technology stack}
+\end{table}
+
+\subsection{Backend (\texttt{bikefitting-web/backend/})}
+
+The backend runs on \textbf{Modal}, a serverless GPU platform that provides on-demand NVIDIA T4 GPUs.
+
+\subsubsection{Key Files}
+
+\begin{itemize}
+    \item \texttt{modal\_app.py}: Main application defining all API endpoints
+    \item \texttt{processing/}: Processing modules (bike segmenter, angle predictor, pose detector, video processor)
+\end{itemize}
+
+\subsubsection{API Endpoints}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}llp{7cm}@{}}
+\toprule
+\textbf{Endpoint} & \textbf{Method} & \textbf{Description} \\
+\midrule
+\texttt{/process\_video\_stream} & POST & Accepts base64-encoded video, returns SSE stream with progress updates and final results \\
+\texttt{/download} & GET & Returns the processed video file by job ID \\
+\texttt{/health} & GET & Health check and system limits \\
+\bottomrule
+\end{tabular}
+\caption{Backend API endpoints}
+\end{table}
+
+\subsubsection{Processing Pipeline}
+
+For each uploaded video, the backend:
+
+\begin{enumerate}
+    \item Decodes the base64 video and saves to temporary storage
+    \item Loads the three AI models (YOLOv8-seg, YOLOv8-pose, ConvNeXt)
+    \item For each frame:
+    \begin{enumerate}
+        \item Detect human pose and calculate joint angles
+        \item Segment the bicycle and predict tilt angle
+        \item Store per-frame angle data
+        \item Draw skeleton overlay on the output frame
+    \end{enumerate}
+    \item Encode output video with H.264 codec (FFmpeg)
+    \item Return frame-by-frame angle data to frontend
+\end{enumerate}
+
+\subsubsection{AI Models Used}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}llp{6cm}@{}}
+\toprule
+\textbf{Model} & \textbf{Task} & \textbf{Output} \\
+\midrule
+YOLOv8n-seg & Instance segmentation & Bicycle pixel mask \\
+YOLOv8m-pose & Pose estimation & 17 body keypoints with confidence \\
+ConvNeXt-Tiny & Angle classification & Bike tilt angle $[-180°, 180°]$ \\
+\bottomrule
+\end{tabular}
+\caption{AI models in the processing pipeline}
+\end{table}
+
+\subsection{Data Flow}
+
+\begin{enumerate}
+    \item \textbf{Upload}: User selects video → Browser reads as base64 → Direct POST to Modal endpoint
+    \item \textbf{Processing}: Modal GPU processes video → Streams progress via SSE
+    \item \textbf{Results}: 
+    \begin{itemize}
+        \item \texttt{frame\_data}: Array of per-frame angles (JSON)
+        \item \texttt{job\_id}: Identifier for video download
+    \end{itemize}
+    \item \textbf{Playback}: Video loads from Modal → Frontend syncs current playback time with \texttt{frame\_data} to display live angles
+\end{enumerate}
+
+\subsection{Security Measures}
+
+The application implements several security measures:
+
+\begin{itemize}
+    \item \textbf{Input Validation}: File size limits (200MB), duration limits (2 minutes), FPS range enforcement
+    \item \textbf{Path Traversal Prevention}: Job IDs are sanitized to alphanumeric characters only
+    \item \textbf{Security Headers}: X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy
+    \item \textbf{Rate Limiting}: 10 requests per hour per client
+    \item \textbf{Temp File Cleanup}: Input files are deleted after processing
+\end{itemize}
+
+\subsection{Deployment}
+
+\subsubsection{Backend Deployment (Modal)}
+
+\begin{lstlisting}[style=code, language=bash]
+# Install Modal CLI
+pip install modal
+
+# Authenticate
+modal setup
+
+# Create persistent volume for model
+modal volume create bikefitting-models
+modal volume put bikefitting-models best_model.pt best_model.pt
+
+# Deploy
+cd bikefitting-web/backend
+modal deploy modal_app.py
+\end{lstlisting}
+
+\subsubsection{Frontend Deployment (Vercel)}
+
+\begin{lstlisting}[style=code, language=bash]
+cd bikefitting-web/frontend
+npm install
+vercel
+
+# Set environment variables in Vercel dashboard:
+# NEXT_PUBLIC_MODAL_STREAM_URL
+# NEXT_PUBLIC_MODAL_DOWNLOAD_URL
+\end{lstlisting}
+
+% ============================================================================
+\section{Dependencies and External Packages}
+% ============================================================================
+
+\subsection{Python Dependencies}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Package} & \textbf{Version} & \textbf{Purpose} \\
+\midrule
+PyTorch & $\geq$ 2.0.0 & Deep learning framework \\
+torchvision & $\geq$ 0.15.0 & Image transforms and pretrained models \\
+ultralytics & $\geq$ 8.0.0 & YOLOv8 models (seg, pose) \\
+opencv-python & $\geq$ 4.8.0 & Image and video processing \\
+numpy & $\geq$ 1.24.0 & Numerical operations \\
+pandas & --- & Data manipulation \\
+tqdm & $\geq$ 4.65.0 & Progress bars \\
+Pillow & $\geq$ 10.0.0 & Image I/O \\
+\bottomrule
+\end{tabular}
+\caption{Core Python dependencies}
+\end{table}
+
+\subsection{SAM3 (\texttt{sam3/})}
+
+The SAM3 directory contains Meta's Segment Anything Model 3, installed in editable mode. This package provides advanced segmentation capabilities and is included as a Git submodule.
+
+% ============================================================================
+\section{Conclusion}
+% ============================================================================
+
+The BikeFit AI system demonstrates an end-to-end machine learning pipeline from data collection to production deployment. Key technical achievements include:
+
+\begin{itemize}
+    \item \textbf{Novel angle representation}: Circular soft labels with Gaussian smoothing for handling angular wrap-around
+    \item \textbf{Multi-model inference}: Combining segmentation, pose estimation, and classification in a single pipeline
+    \item \textbf{Real-time synchronization}: Frame-accurate angle display synchronized with video playback
+    \item \textbf{Serverless GPU deployment}: Cost-effective on-demand GPU processing via Modal
+\end{itemize}
+
+The system achieves approximately 2° mean absolute error for bike angle prediction while providing real-time joint angle measurements for comprehensive cycling posture analysis.
+
+% ============================================================================
+\appendix
+\section{File Reference}
+% ============================================================================
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{@{}lp{9cm}@{}}
+\toprule
+\textbf{File} & \textbf{Description} \\
+\midrule
+\multicolumn{2}{l}{\textit{create\_labeled\_dataset/}} \\
+\texttt{1\_build\_dataset.py} & Main entry point for dataset builder GUI \\
+\texttt{dataset\_builder.py} & Core synchronization logic \\
+\midrule
+\multicolumn{2}{l}{\textit{bike\_angle\_detection\_model/}} \\
+\texttt{1\_preprocess.py} & Masks bikes and creates training data \\
+\texttt{2\_train.py} & Trains the ConvNeXt angle classifier \\
+\texttt{3\_inference.py} & Runs inference on new images \\
+\texttt{generate\_demo\_video.py} & Creates annotated demo videos \\
+\midrule
+\multicolumn{2}{l}{\textit{joint\_angle\_detection/}} \\
+\texttt{1\_live\_camera.py} & Real-time webcam angle detection \\
+\texttt{core.py} & Pose detection and angle calculation functions \\
+\midrule
+\multicolumn{2}{l}{\textit{bikefitting-web/backend/}} \\
+\texttt{modal\_app.py} & Modal serverless API endpoints \\
+\texttt{processing/*.py} & Video processing modules \\
+\midrule
+\multicolumn{2}{l}{\textit{bikefitting-web/frontend/src/}} \\
+\texttt{app/page.tsx} & Main application page \\
+\texttt{components/VideoUploader.tsx} & Video upload interface \\
+\texttt{components/ResultsViewer.tsx} & Results display interface \\
+\bottomrule
+\end{tabular}
+\caption{Complete file reference}
+\end{table}
+
+\end{document}
+
