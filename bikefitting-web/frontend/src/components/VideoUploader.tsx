@@ -249,14 +249,15 @@ export default function VideoUploader({
       const downloadBaseUrl = process.env.NEXT_PUBLIC_MODAL_DOWNLOAD_URL
       if (!downloadBaseUrl) throw new Error('Download URL not configured')
       
-      const downloadUrl = finalResult.job_id
-        ? `${downloadBaseUrl}?job_id=${finalResult.job_id}`
+      const result = finalResult as { job_id?: string; stats?: Record<string, unknown>; frame_data?: FrameData[] }
+      const downloadUrl = result.job_id
+        ? `${downloadBaseUrl}?job_id=${result.job_id}`
         : ''
 
       onComplete({
         resultUrl: downloadUrl,
-        stats: (finalResult.stats as ProcessingResult['stats']) || { frames_processed: 0 },
-        frameData: finalResult.frame_data || [],
+        stats: (result.stats as ProcessingResult['stats']) || { frames_processed: 0 },
+        frameData: result.frame_data || [],
       })
     } catch (err) {
       onError(err instanceof Error ? err.message : 'Upload failed')
