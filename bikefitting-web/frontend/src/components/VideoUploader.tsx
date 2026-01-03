@@ -179,8 +179,11 @@ export default function VideoUploader({
       onProcessingStart()
       setProgressInfo({ stage: 'setup', message: 'Connecting...', percent: 10 })
 
-      // Call streaming API
-      const response = await fetch('/api/process-stream', {
+      // Call Modal directly (bypasses Vercel's 4.5MB body limit)
+      const modalUrl = process.env.NEXT_PUBLIC_MODAL_STREAM_URL
+      if (!modalUrl) throw new Error('Modal stream URL not configured')
+
+      const response = await fetch(modalUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
