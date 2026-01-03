@@ -70,15 +70,16 @@ def check_rate_limit(client_id: str) -> tuple[bool, str]:
 
 
 def validate_api_key(api_key: Optional[str]) -> tuple[bool, str]:
-    """Validate API key from environment."""
+    """Validate API key from environment. Optional for direct browser access."""
+    # API key is optional - allows direct frontend calls without exposing secrets
+    # For production, consider adding rate limiting or other protections
     expected_key = os.environ.get("BIKEFITTING_API_KEY", "")
     if not expected_key:
-        return True, "No API key configured (development mode)"
-    if not api_key:
-        return False, "API key required"
-    if api_key != expected_key:
-        return False, "Invalid API key"
-    return True, "OK"
+        return True, "No API key configured"
+    if api_key and api_key == expected_key:
+        return True, "API key valid"
+    # Allow requests without API key (for frontend direct calls)
+    return True, "No API key provided (allowed)"
 
 
 def setup_processing_modules():
