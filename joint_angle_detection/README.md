@@ -1,35 +1,40 @@
-Joint angle detection
+# Joint Angle Detection
 
-What this does
+Live webcam detection of rider body angles using pose estimation.
 
-- Uses YOLOv8 pose to detect a rider’s joints from a webcam feed
-- Computes 3 angles on one body side:
-  - knee (hip-knee-ankle)
-  - hip (shoulder-hip-knee)
-  - elbow (shoulder-elbow-wrist)
-- Draws the joints and angles on the live video
+## What it does
 
-Folder setup (needed before running)
+Points a camera at someone and it detects their joints in real-time. It calculates three angles:
+- Knee angle (hip to knee to ankle)
+- Hip angle (shoulder to hip to knee)
+- Elbow angle (shoulder to elbow to wrist)
 
-- `joint_angle_detection/models/yolov8n-pose.pt` must exist
-  - This repo includes it already. If it’s missing, download the YOLOv8 pose weights and put it there.
+## How to run
 
-Run
-
-```bash
-conda activate bikefitting
+```
 cd joint_angle_detection
 python 1_live_camera.py
 ```
 
-Options
+Press 'q' to quit.
 
-- Choose camera: `--source 0`
-- Force side: `--side left` or `--side right` (default is auto)
-- Keypoint confidence: `--min_conf 0.5`
-- Custom weights path: `--model path\\to\\yolov8n-pose.pt`
+## Options
 
-Notes
+Use a different camera:
+```
+python 1_live_camera.py --source 1
+```
 
-- Press `q` to quit.
+Force left or right side (default auto-detects):
+```
+python 1_live_camera.py --side left
+```
 
+Adjust detection sensitivity:
+```
+python 1_live_camera.py --min_conf 0.3
+```
+
+## Requirements
+
+The model file yolov8m-pose.pt should be in the models/ folder at the project root. If it's missing, the code will auto-download it.

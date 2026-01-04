@@ -270,7 +270,9 @@ class BikeSegmenter:
     
     BIKE_CLASSES = [1, 3]
     
-    def __init__(self, model_name="yolov8n-seg.pt", conf_threshold=0.3):
+    def __init__(self, model_name=None, conf_threshold=0.3):
+        if model_name is None:
+            model_name = str(Path(__file__).parent.parent / "models" / "yolov8n-seg.pt")
         self.model = YOLO(model_name)
         self.conf_threshold = conf_threshold
         
@@ -495,7 +497,7 @@ def generate_demo(video_path, labels_csv, model_path, output_path,
     segmenter = BikeSegmenter()
     
     print("Loading pose model (yolov8m-pose for better accuracy)...")
-    pose_model_path = Path(__file__).parent.parent / "joint_angle_detection" / "models" / "yolov8m-pose.pt"
+    pose_model_path = Path(__file__).parent.parent / "models" / "yolov8m-pose.pt"
     if not pose_model_path.exists():
         pose_model_path = "yolov8m-pose.pt"  # Will download if needed
     pose_model = YOLO(str(pose_model_path))
@@ -745,10 +747,11 @@ class DemoVideoGUI:
         ttk.Button(file_frame, text="Browse", command=self.browse_labels).grid(row=1, column=2, padx=5)
         
         ttk.Label(file_frame, text="Model:").grid(row=2, column=0, sticky='w', padx=5)
-        self.model_label = ttk.Label(file_frame, text="models/optuna_best/best_model.pt", width=60)
+        default_model = Path(__file__).parent.parent / "models" / "best_model.pt"
+        self.model_label = ttk.Label(file_frame, text=str(default_model), width=60)
         self.model_label.grid(row=2, column=1, padx=5)
         ttk.Button(file_frame, text="Browse", command=self.browse_model).grid(row=2, column=2, padx=5)
-        self.model_path = "models/optuna_best/best_model.pt"
+        self.model_path = str(default_model)
         
         preview_frame = ttk.Frame(main_frame)
         preview_frame.pack(fill=tk.BOTH, expand=True, pady=10)
@@ -956,7 +959,7 @@ def main():
     parser.add_argument("--gui", action="store_true", help="Launch GUI for section selection")
     parser.add_argument("--video", type=str, help="Input video path")
     parser.add_argument("--labels", type=str, help="Labels CSV path")
-    parser.add_argument("--model", type=str, default="models/optuna_best/best_model.pt")
+    parser.add_argument("--model", type=str, default=str(Path(__file__).parent.parent / "models" / "best_model.pt"))
     parser.add_argument("--output", type=str, default="demo_video.mp4")
     parser.add_argument("--start", type=int, default=0, help="Start frame")
     parser.add_argument("--duration", type=float, default=30, help="Duration in seconds")

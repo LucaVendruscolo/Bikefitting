@@ -22,7 +22,7 @@ def main():
     args = parse_args()
 
     # load the pose model (default: yolov8m-pose for better accuracy)
-    default_model = Path(__file__).parent / "models" / "yolov8m-pose.pt"
+    default_model = Path(__file__).parent.parent / "models" / "yolov8m-pose.pt"
     model_path = Path(args.model) if args.model else default_model
     
     # Download if not exists

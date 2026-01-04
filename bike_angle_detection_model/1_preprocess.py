@@ -33,7 +33,7 @@ def parse_args():
                         help="Path to CSV with frame_path and bike_angle_deg columns")
     parser.add_argument("--output_dir", type=str, default="data",
                         help="Output directory for masked images and new CSV")
-    parser.add_argument("--yolo_model", type=str, default="yolov8n-seg.pt",
+    parser.add_argument("--yolo_model", type=str, default=str(Path(__file__).parent.parent / "models" / "yolov8n-seg.pt"),
                         help="YOLO segmentation model to use")
     parser.add_argument("--target_size", type=int, default=224,
                         help="Target size for output images (square)")
@@ -58,8 +58,10 @@ class BikeSegmenter:
     # COCO class IDs: bicycle=1, motorcycle=3
     BIKE_CLASSES = [1, 3]
     
-    def __init__(self, model_name: str = "yolov8n-seg.pt", conf_threshold: float = 0.3):
+    def __init__(self, model_name: str = None, conf_threshold: float = 0.3):
         """Initialize the YOLO segmentation model."""
+        if model_name is None:
+            model_name = str(Path(__file__).parent.parent / "models" / "yolov8n-seg.pt")
         print(f"Loading YOLO segmentation model: {model_name}")
         self.model = YOLO(model_name)
         self.conf_threshold = conf_threshold

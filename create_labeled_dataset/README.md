@@ -1,44 +1,47 @@
-create_labeled_dataset (dataset builder)
+# Create Labeled Dataset
 
-What you need before running
+This tool syncs video footage with phone IMU (gyroscope) data to create training data for the bike angle model.
 
-- Put your videos in `create_labeled_dataset/videos/`
-  - Example: `create_labeled_dataset/videos/IMG_0811.MOV`
-- Put your IMU CSV runs in `create_labeled_dataset/imu_runs/`
-  - Example: `create_labeled_dataset/imu_runs/imu_run_20251106_230657.csv`
-- `sync_configs.json` is created/updated automatically (you can delete it to reset)
+## What you need
 
-Run
+1. Videos of someone on a bike (filmed from various angles)
+2. IMU CSV files from your phone's gyroscope recorded during those videos
 
-```bash
-conda activate bikefitting
+## Setup
+
+Put your files in these folders:
+- Videos go in: create_labeled_dataset/videos/
+- IMU CSVs go in: create_labeled_dataset/imu_runs/
+
+## How to run
+
+```
 cd create_labeled_dataset
 python 1_build_dataset.py
 ```
 
-How it works
+This opens a GUI.
 
-- Pick a video
-- Find the frame where the phone time is visible
-- Type the phone time
-- Click “Find CSV” (auto-picks the matching IMU run)
-- Mark the sync frame
-- Optional: set trim start/end
-- Save config for that video
-- Repeat, then click “Create Dataset”
+## How to use the GUI
 
-Output
+1. Pick a video from the list
+2. Scrub through the video to find a frame where your phone's clock is visible
+3. Type in the phone time you see
+4. Click "Find CSV" - it will auto-match the right IMU file
+5. Mark that frame as the sync point
+6. Optionally set trim start/end to skip boring parts
+7. Save the config
+8. Repeat for all your videos
+9. Click "Create Dataset"
 
-- You choose an output folder in the UI (default points at `create_labeled_dataset/output/`)
-- It writes:
-  - `synchronized_dataset.csv`
-  - `frames/` (all extracted frames)
+## Output
 
-CSV columns you care about
+After clicking "Create Dataset", you get:
+- output/synchronized_dataset.csv - the labels file
+- output/frames/ - all the extracted video frames
 
-- `frame_path` (relative path to the frame)
-- `bike_angle_deg` (target, -180 to 180; 0 = facing camera; ±180 = facing away)
-- `sync_time_diff_ms` (sync quality)
+The CSV has columns:
+- frame_path: path to the frame image
+- bike_angle_deg: the bike angle (-180 to 180, where 0 = facing camera)
 
-This CSV is what the bike angle model uses later.
-
+This CSV is what you feed into the bike_angle_detection_model for training.

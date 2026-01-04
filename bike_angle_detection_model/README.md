@@ -1,52 +1,50 @@
-Bike angle detection model
+# Bike Angle Detection Model
 
-Predicts camera-relative bike angle (-180 to 180 deg, where 0 = facing camera).
+Predicts the angle of a bike relative to the camera (-180 to 180 degrees, where 0 = facing you).
 
-What you need before running
+## What you need
 
-- A labeled CSV with `frame_path` and `bike_angle_deg` columns
-- If you used the dataset builder, that CSV is at:
-  `create_labeled_dataset/output/synchronized_dataset.csv`
+A labeled CSV with frame_path and bike_angle_deg columns. If you used the dataset builder, this is at:
+create_labeled_dataset/output/synchronized_dataset.csv
 
-1) Preprocess
+## Step 1: Preprocess
 
-Masks bike pixels and subsamples frames.
+This masks out everything except the bike in each frame and reduces the frame rate to avoid duplicate training data.
 
-```bash
+```
 python 1_preprocess.py --input_csv ../create_labeled_dataset/output/synchronized_dataset.csv --output_dir data
 ```
 
-Output: `data/dataset.csv` and `data/frames/` (masked images)
+This creates data/dataset.csv and data/frames/ with the masked images.
 
-2) Train
+## Step 2: Train
 
-```bash
+```
 python 2_train.py --data_dir data
 ```
 
-Default parameters (optimized via Optuna search):
-- backbone: convnext_tiny
-- num_bins: 120 (3 deg per bin)
-- label_smoothing: 22 deg
-- lr: 3.4e-5
-- batch_size: 48
-- epochs: 100
+This trains for about 100 epochs. The best model is saved to the models folder.
 
-Expected performance: ~2 deg MAE on validation set.
+Expected accuracy: around 2 degrees average error.
 
-Model saved to: `models/classification_bins/best_model.pt`
+## Step 3: Test on images
 
-3) Inference
-
-```bash
-python 3_inference.py --model models/classification_bins/best_model.pt --image path/to/bike.jpg
-python 3_inference.py --model models/classification_bins/best_model.pt --csv data/dataset.csv --output predictions.csv
+Single image:
+```
+python 3_inference.py --model ../models/best_model.pt --image path/to/bike.jpg
 ```
 
-Other backbones
+Batch predictions:
+```
+python 3_inference.py --model ../models/best_model.pt --csv data/dataset.csv --output predictions.csv
+```
 
-You can try other backbones with `--backbone`:
-- convnext_tiny (default, best accuracy/speed tradeoff)
-- efficientnet_b0 (faster, slightly less accurate)
-- resnet50 (classic)
-- convnext_small (slower)
+## Generate demo video
+
+There's also a GUI tool to create demo videos with overlaid predictions:
+
+```
+python generate_demo_video.py --gui
+```
+
+This lets you pick a video, model, and time range, then generates an annotated output video.

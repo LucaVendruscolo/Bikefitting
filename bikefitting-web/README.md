@@ -1,194 +1,97 @@
-# BikeFit AI
+# Bikefitting Web App
 
-A web app that analyzes cycling videos to detect body posture and bike angles using AI.
+Upload a cycling video and get AI analysis of your riding position.
 
-Upload a video → AI analyzes your position → Get real-time angle measurements
+## How it works
 
-## How It Works
+1. You upload a video through the website
+2. The video gets sent to a cloud GPU (Modal) for processing
+3. AI models detect the bike and your body position
+4. You see the results with angle measurements overlaid
 
+## What you need
+
+- Node.js 18 or newer
+- A Modal account (modal.com)
+- The best_model.pt file uploaded to Modal
+
+## Setup the backend (Modal)
+
+First, install Modal and log in:
 ```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   Your Browser  │────▶│  Next.js App    │────▶│  Modal (GPU)    │
-│                 │     │  (Vercel)       │     │                 │
-│  Upload Video   │     │  API Proxy      │     │  AI Processing  │
-│  View Results   │◀────│  Serve Frontend │◀────│  YOLO + ConvNeXt│
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-```
-
-1. **Upload**: Select a cycling video and choose time range/FPS
-2. **Process**: Video is sent to Modal's GPU servers for AI analysis
-3. **Stream**: Real-time progress updates as frames are processed
-4. **View**: Watch the annotated video with live angle measurements
-
-## AI Models
-
-| Model | Purpose |
-|-------|---------|
-| **YOLOv8n-seg** | Segments the bike from the frame |
-| **YOLOv8m-pose** | Detects human body keypoints |
-| **ConvNeXt** | Predicts bike tilt angle (your trained model) |
-
-## Measurements
-
-- **Bike Angle**: Tilt of the bike (from your custom model)
-- **Knee Angle**: Angle at the knee joint
-- **Hip Angle**: Angle at the hip joint  
-- **Elbow Angle**: Angle at the elbow joint
-
-## Project Structure
-
-```
-bikefitting-web/
-├── backend/                    # Modal backend (GPU processing)
-│   ├── modal_app.py           # Main API endpoints
-│   └── processing/            # Local copies of processing modules
-│
-├── frontend/                   # Next.js frontend (Vercel)
-│   ├── src/
-│   │   ├── app/
-│   │   │   ├── page.tsx       # Main page
-│   │   │   └── api/           # API routes
-│   │   │       └── process-stream/  # Proxy to Modal
-│   │   └── components/
-│   │       ├── VideoUploader.tsx    # Upload + settings UI
-│   │       └── ResultsViewer.tsx    # Video player + live data
-│   └── package.json
-│
-└── SETUP.md                    # Detailed deployment guide
-```
-
-## Quick Start
-
-### Prerequisites
-
-- [Node.js](https://nodejs.org/) 18+
-- [Modal](https://modal.com/) account
-- Your trained model file (`best_model.pt`)
-
-### 1. Deploy Backend (Modal)
-
-```bash
-# Install Modal CLI
 pip install modal
-
-# Authenticate
 modal setup
+```
 
-# Create model storage and upload your model
+Create storage for the model:
+```
 modal volume create bikefitting-models
-modal volume put bikefitting-models path/to/best_model.pt best_model.pt
+modal volume put bikefitting-models ../models/best_model.pt best_model.pt
+```
 
-# Create API key secret
-modal secret create bikefitting-api-key BIKEFITTING_API_KEY=your-secret-key-here
+Create a temp storage for processed videos:
+```
+modal volume create bikefitting-temp
+```
 
-# Deploy
+Deploy the backend:
+```
 cd backend
 modal deploy modal_app.py
 ```
 
-### 2. Run Frontend
+After deploying, Modal will give you URLs. You need the ones for:
+- process_video_stream
+- download
 
-```bash
+## Setup the frontend
+
+```
 cd frontend
 npm install
+```
 
-# Create .env.local with your Modal URLs (replace YOUR-USERNAME)
-echo "MODAL_STREAM_URL=https://YOUR-USERNAME--bikefitting-process-video-stream.modal.run" > .env.local
-echo "MODAL_API_KEY=your-secret-key-here" >> .env.local
-echo "NEXT_PUBLIC_MODAL_DOWNLOAD_URL=https://YOUR-USERNAME--bikefitting-download.modal.run" >> .env.local
+Create a file called .env.local with your Modal URLs:
+```
+NEXT_PUBLIC_MODAL_STREAM_URL=https://YOUR-USERNAME--bikefitting-process-video-stream.modal.run
+NEXT_PUBLIC_MODAL_DOWNLOAD_URL=https://YOUR-USERNAME--bikefitting-download.modal.run
+```
 
+Replace YOUR-USERNAME with your Modal username.
+
+Run the dev server:
+```
 npm run dev
 ```
 
 Open http://localhost:3000
 
-### 3. Deploy to Vercel
+## Deploy to the internet (Vercel)
 
-```bash
+```
 npm install -g vercel
+cd frontend
 vercel
-
-# Set environment variables in Vercel dashboard:
-# - MODAL_STREAM_URL
-# - MODAL_API_KEY
-# - NEXT_PUBLIC_MODAL_DOWNLOAD_URL
 ```
 
-## Environment Variables
-
-### Frontend (.env.local)
-
-| Variable | Description |
-|----------|-------------|
-| `MODAL_STREAM_URL` | URL to Modal's streaming endpoint (server-side) |
-| `MODAL_API_KEY` | Secret key for API authentication (server-side) |
-| `NEXT_PUBLIC_MODAL_DOWNLOAD_URL` | URL to Modal's download endpoint (client-side) |
-
-### Backend (Modal Secrets)
-
-| Secret Name | Key | Description |
-|-------------|-----|-------------|
-| `bikefitting-api-key` | `BIKEFITTING_API_KEY` | Must match frontend's `MODAL_API_KEY` |
-
-## API Endpoints
-
-### Modal Backend
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/process_video_stream` | POST | Process video with SSE progress updates |
-| `/download/{job_id}` | GET | Download processed video |
-| `/health` | GET | Health check |
-
-### Request Format
-
-```json
-{
-  "video_base64": "...",
-  "api_key": "your-key",
-  "output_fps": 10,
-  "start_time": 0,
-  "end_time": 30,
-  "max_duration_sec": 120
-}
-```
-
-### SSE Response Events
-
-```
-data: {"type": "progress", "stage": "processing", "message": "Analyzing...", "percent": 50}
-data: {"type": "complete", "job_id": "abc123", "stats": {...}, "frame_data": [...]}
-```
+When asked, add your environment variables in the Vercel dashboard:
+- NEXT_PUBLIC_MODAL_STREAM_URL
+- NEXT_PUBLIC_MODAL_DOWNLOAD_URL
 
 ## Limits
 
-| Limit | Value |
-|-------|-------|
-| Max video duration | 2 minutes |
-| Max file size | 200 MB |
-| Output FPS range | 5-15 |
-| Rate limit | 10 requests/hour |
+- Max video length: 2 minutes
+- Max file size: 200 MB
+- Output FPS: 5-15 (lower = faster processing)
 
 ## Troubleshooting
 
-### Video not loading
-- Check browser console for errors
-- Ensure Modal endpoint is deployed and running
-- Verify API key matches in frontend and backend
+Video won't load?
+- Check your browser console for errors
+- Make sure Modal is deployed and running
+- Check your .env.local URLs are correct
 
-### Slow processing
-- Reduce output FPS (5 is fastest)
+Processing is slow?
+- Use a lower FPS (5 is fastest)
 - Select a shorter time range
-- Modal cold starts take ~30s on first request
-
-## Development
-
-```bash
-# Backend - test locally
-cd backend
-modal serve modal_app.py  # Runs with hot-reload
-
-# Frontend - development server
-cd frontend
-npm run dev
-```
+- First request takes ~30 seconds for Modal to start up
