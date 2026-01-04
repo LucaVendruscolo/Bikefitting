@@ -84,7 +84,7 @@ bike_angle_detection_model/predictions.csv
 joint_angle_detection/models/
 
 # --- Large media / weights (generic) ---
-*.pt
+
 *.pth
 *.onnx
 *.engine
