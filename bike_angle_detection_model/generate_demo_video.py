@@ -353,6 +353,14 @@ class AngleClassifier(nn.Module):
             self.backbone = models.convnext_small(weights=None)
             num_features = self.backbone.classifier[2].in_features
             self.backbone.classifier = nn.Identity()
+        elif backbone_name == 'resnet50':
+            self.backbone = models.resnet50(weights=None)
+            num_features = self.backbone.fc.in_features
+            self.backbone.fc = nn.Identity()
+        elif backbone_name == 'efficientnet_b0':
+            self.backbone = models.efficientnet_b0(weights=None)
+            num_features = self.backbone.classifier[1].in_features
+            self.backbone.classifier = nn.Identity()
         else:
             raise ValueError(f"Unknown backbone: {backbone_name}")
             

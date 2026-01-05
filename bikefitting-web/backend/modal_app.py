@@ -162,7 +162,7 @@ from pathlib import Path
 from torchvision import models
 
 class AngleClassifier(nn.Module):
-    """ConvNeXt-based angle classifier with custom head (matches training code)."""
+    """Angle classifier with custom head (matches training code)."""
     
     def __init__(self, backbone_name="convnext_tiny", num_bins=120):
         super().__init__()
@@ -176,6 +176,14 @@ class AngleClassifier(nn.Module):
         elif backbone_name == "convnext_small":
             self.backbone = models.convnext_small(weights=None)
             feature_dim = self.backbone.classifier[2].in_features
+            self.backbone.classifier = nn.Identity()
+        elif backbone_name == "resnet50":
+            self.backbone = models.resnet50(weights=None)
+            feature_dim = self.backbone.fc.in_features
+            self.backbone.fc = nn.Identity()
+        elif backbone_name == "efficientnet_b0":
+            self.backbone = models.efficientnet_b0(weights=None)
+            feature_dim = self.backbone.classifier[1].in_features
             self.backbone.classifier = nn.Identity()
         else:
             raise ValueError(f"Unknown backbone: {backbone_name}")

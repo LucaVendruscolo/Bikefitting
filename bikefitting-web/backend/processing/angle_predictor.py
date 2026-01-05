@@ -18,19 +18,12 @@ class AngleClassifier(nn.Module):
     Angle classifier with circular soft labels.
     
     Architecture (must match training exactly):
-    - Backbone: ConvNeXt Tiny or Small
-    - Head: LayerNorm → Linear(768, 512) → GELU → Dropout(0.3) 
-            → Linear(512, 256) → GELU → Dropout(0.2) → Linear(256, num_bins)
+    - Backbone: ConvNeXt, ResNet50, or EfficientNet
+    - Head: LayerNorm → Linear → GELU → Dropout → Linear → GELU → Dropout → Linear
     """
     
     def __init__(self, backbone_name: str, num_bins: int):
         super().__init__()
-        
-        # #region agent log
-        import json as _json
-        with open(r'c:\Users\lucav\Downloads\Bikefitting2\.cursor\debug.log', 'a') as _f:
-            _f.write(_json.dumps({"location":"angle_predictor.py:AngleClassifier.__init__","message":"Creating AngleClassifier","data":{"backbone_name":backbone_name,"num_bins":num_bins},"hypothesisId":"A","sessionId":"debug","runId":"run1"})+'\n')
-        # #endregion
         
         if backbone_name == 'convnext_tiny':
             self.backbone = models.convnext_tiny(weights=None)
@@ -40,13 +33,16 @@ class AngleClassifier(nn.Module):
             self.backbone = models.convnext_small(weights=None)
             num_features = self.backbone.classifier[2].in_features
             self.backbone.classifier = nn.Identity()
+        elif backbone_name == 'resnet50':
+            self.backbone = models.resnet50(weights=None)
+            num_features = self.backbone.fc.in_features
+            self.backbone.fc = nn.Identity()
+        elif backbone_name == 'efficientnet_b0':
+            self.backbone = models.efficientnet_b0(weights=None)
+            num_features = self.backbone.classifier[1].in_features
+            self.backbone.classifier = nn.Identity()
         else:
             raise ValueError(f"Unknown backbone: {backbone_name}")
-        
-        # #region agent log
-        with open(r'c:\Users\lucav\Downloads\Bikefitting2\.cursor\debug.log', 'a') as _f:
-            _f.write(_json.dumps({"location":"angle_predictor.py:AngleClassifier.__init__:post_backbone","message":"Backbone created, classifier replaced with Identity","data":{"num_features":num_features,"classifier_type":str(type(self.backbone.classifier))},"hypothesisId":"A","sessionId":"debug","runId":"run1"})+'\n')
-        # #endregion
         
         self.head = nn.Sequential(
             nn.LayerNorm(num_features),
@@ -58,12 +54,6 @@ class AngleClassifier(nn.Module):
             nn.Dropout(0.2),
             nn.Linear(256, num_bins),
         )
-        
-        # #region agent log
-        model_keys = list(self.state_dict().keys())[:10]
-        with open(r'c:\Users\lucav\Downloads\Bikefitting2\.cursor\debug.log', 'a') as _f:
-            _f.write(_json.dumps({"location":"angle_predictor.py:AngleClassifier.__init__:final","message":"Model created - first 10 state_dict keys","data":{"first_10_keys":model_keys},"hypothesisId":"B","sessionId":"debug","runId":"run1"})+'\n')
-        # #endregion
     
     def forward(self, x):
         features = self.backbone(x)
