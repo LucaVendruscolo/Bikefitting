@@ -26,13 +26,23 @@ class AngleClassifier(nn.Module):
     def __init__(self, backbone_name: str, num_bins: int):
         super().__init__()
         
-        # #region agent log
-        import json as _json
-        with open(r'c:\Users\lucav\Downloads\Bikefitting2\.cursor\debug.log', 'a') as _f:
-            _f.write(_json.dumps({"location":"angle_predictor.py:AngleClassifier.__init__","message":"Creating AngleClassifier","data":{"backbone_name":backbone_name,"num_bins":num_bins},"hypothesisId":"A","sessionId":"debug","runId":"run1"})+'\n')
-        # #endregion
+        # # #region agent log
+        # import json as _json
+        # with open(r'c:\Users\lucav\Downloads\Bikefitting2\.cursor\debug.log', 'a') as _f:
+        #     _f.write(_json.dumps({"location":"angle_predictor.py:AngleClassifier.__init__","message":"Creating AngleClassifier","data":{"backbone_name":backbone_name,"num_bins":num_bins},"hypothesisId":"A","sessionId":"debug","runId":"run1"})+'\n')
+        # # #endregion
         
-        if backbone_name == 'convnext_tiny':
+        # for some reason model was trained on ResNet50 backbone??? Have to make this in order to run temporarily...
+        # --- NEW: Added support for ResNet50 ---
+        if backbone_name == 'resnet50':
+            # Load ResNet50
+            self.backbone = models.resnet50(weights=None)
+            # ResNet stores features in .fc, not .classifier
+            num_features = self.backbone.fc.in_features
+            # Remove the original classification head
+            self.backbone.fc = nn.Identity()
+        # addition ends here
+        elif backbone_name == 'convnext_tiny':
             self.backbone = models.convnext_tiny(weights=None)
             num_features = self.backbone.classifier[2].in_features
             self.backbone.classifier = nn.Identity()
@@ -43,10 +53,10 @@ class AngleClassifier(nn.Module):
         else:
             raise ValueError(f"Unknown backbone: {backbone_name}")
         
-        # #region agent log
-        with open(r'c:\Users\lucav\Downloads\Bikefitting2\.cursor\debug.log', 'a') as _f:
-            _f.write(_json.dumps({"location":"angle_predictor.py:AngleClassifier.__init__:post_backbone","message":"Backbone created, classifier replaced with Identity","data":{"num_features":num_features,"classifier_type":str(type(self.backbone.classifier))},"hypothesisId":"A","sessionId":"debug","runId":"run1"})+'\n')
-        # #endregion
+        # # #region agent log
+        # with open(r'c:\Users\lucav\Downloads\Bikefitting2\.cursor\debug.log', 'a') as _f:
+        #     _f.write(_json.dumps({"location":"angle_predictor.py:AngleClassifier.__init__:post_backbone","message":"Backbone created, classifier replaced with Identity","data":{"num_features":num_features,"classifier_type":str(type(self.backbone.classifier))},"hypothesisId":"A","sessionId":"debug","runId":"run1"})+'\n')
+        # # #endregion
         
         self.head = nn.Sequential(
             nn.LayerNorm(num_features),
@@ -59,11 +69,11 @@ class AngleClassifier(nn.Module):
             nn.Linear(256, num_bins),
         )
         
-        # #region agent log
-        model_keys = list(self.state_dict().keys())[:10]
-        with open(r'c:\Users\lucav\Downloads\Bikefitting2\.cursor\debug.log', 'a') as _f:
-            _f.write(_json.dumps({"location":"angle_predictor.py:AngleClassifier.__init__:final","message":"Model created - first 10 state_dict keys","data":{"first_10_keys":model_keys},"hypothesisId":"B","sessionId":"debug","runId":"run1"})+'\n')
-        # #endregion
+        # # #region agent log
+        # model_keys = list(self.state_dict().keys())[:10]
+        # with open(r'c:\Users\lucav\Downloads\Bikefitting2\.cursor\debug.log', 'a') as _f:
+        #     _f.write(_json.dumps({"location":"angle_predictor.py:AngleClassifier.__init__:final","message":"Model created - first 10 state_dict keys","data":{"first_10_keys":model_keys},"hypothesisId":"B","sessionId":"debug","runId":"run1"})+'\n')
+        # # #endregion
     
     def forward(self, x):
         features = self.backbone(x)
@@ -91,12 +101,12 @@ class BikeAnglePredictor:
         # Load checkpoint
         checkpoint = torch.load(model_path, map_location=self.device)
         
-        # #region agent log
-        import json as _json
-        checkpoint_keys = list(checkpoint.keys()) if isinstance(checkpoint, dict) else ['NOT_A_DICT']
-        with open(r'c:\Users\lucav\Downloads\Bikefitting2\.cursor\debug.log', 'a') as _f:
-            _f.write(_json.dumps({"location":"angle_predictor.py:BikeAnglePredictor.__init__:checkpoint_loaded","message":"Checkpoint loaded","data":{"checkpoint_keys":checkpoint_keys},"hypothesisId":"C","sessionId":"debug","runId":"run1"})+'\n')
-        # #endregion
+        # # #region agent log
+        # import json as _json
+        # checkpoint_keys = list(checkpoint.keys()) if isinstance(checkpoint, dict) else ['NOT_A_DICT']
+        # with open(r'c:\Users\lucav\Downloads\Bikefitting2\.cursor\debug.log', 'a') as _f:
+        #     _f.write(_json.dumps({"location":"angle_predictor.py:BikeAnglePredictor.__init__:checkpoint_loaded","message":"Checkpoint loaded","data":{"checkpoint_keys":checkpoint_keys},"hypothesisId":"C","sessionId":"debug","runId":"run1"})+'\n')
+        # # #endregion
         
         # Validate checkpoint
         required_keys = ['model_state_dict', 'num_bins', 'backbone']
@@ -110,20 +120,20 @@ class BikeAnglePredictor:
         self.num_bins = checkpoint['num_bins']
         backbone = checkpoint['backbone']
         
-        # #region agent log
-        state_dict_keys = list(checkpoint['model_state_dict'].keys())[:10]
-        with open(r'c:\Users\lucav\Downloads\Bikefitting2\.cursor\debug.log', 'a') as _f:
-            _f.write(_json.dumps({"location":"angle_predictor.py:BikeAnglePredictor.__init__:state_dict_keys","message":"First 10 keys from checkpoint model_state_dict","data":{"num_bins":self.num_bins,"backbone":backbone,"first_10_checkpoint_keys":state_dict_keys},"hypothesisId":"D","sessionId":"debug","runId":"run1"})+'\n')
-        # #endregion
+        # # #region agent log
+        # state_dict_keys = list(checkpoint['model_state_dict'].keys())[:10]
+        # with open(r'c:\Users\lucav\Downloads\Bikefitting2\.cursor\debug.log', 'a') as _f:
+        #     _f.write(_json.dumps({"location":"angle_predictor.py:BikeAnglePredictor.__init__:state_dict_keys","message":"First 10 keys from checkpoint model_state_dict","data":{"num_bins":self.num_bins,"backbone":backbone,"first_10_checkpoint_keys":state_dict_keys},"hypothesisId":"D","sessionId":"debug","runId":"run1"})+'\n')
+        # # #endregion
         
         # Create model
         self.model = AngleClassifier(backbone, self.num_bins)
         
-        # #region agent log
-        model_state_keys = list(self.model.state_dict().keys())[:10]
-        with open(r'c:\Users\lucav\Downloads\Bikefitting2\.cursor\debug.log', 'a') as _f:
-            _f.write(_json.dumps({"location":"angle_predictor.py:BikeAnglePredictor.__init__:pre_load","message":"Model state_dict keys before load","data":{"first_10_model_keys":model_state_keys},"hypothesisId":"E","sessionId":"debug","runId":"run1"})+'\n')
-        # #endregion
+        # # #region agent log
+        # model_state_keys = list(self.model.state_dict().keys())[:10]
+        # with open(r'c:\Users\lucav\Downloads\Bikefitting2\.cursor\debug.log', 'a') as _f:
+        #     _f.write(_json.dumps({"location":"angle_predictor.py:BikeAnglePredictor.__init__:pre_load","message":"Model state_dict keys before load","data":{"first_10_model_keys":model_state_keys},"hypothesisId":"E","sessionId":"debug","runId":"run1"})+'\n')
+        # # #endregion
         
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.model.eval()
