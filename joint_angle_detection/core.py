@@ -36,6 +36,7 @@ def detect_joints(
           "hip":     (x, y, conf),
           "knee":    (x, y, conf),
           "foot":    (x, y, conf),  # YOLO ankle
+          "opposite_foot": (x, y, conf),  # YOLO opposite ankle
         }
 
     side:
@@ -57,6 +58,7 @@ def detect_joints(
                 "hip": "right_hip",
                 "knee": "right_knee",
                 "foot": "right_ankle",
+                "opposite_foot": "left_ankle",
             }
         else:  # "left"
             return {
@@ -66,6 +68,7 @@ def detect_joints(
                 "hip": "left_hip",
                 "knee": "left_knee",
                 "foot": "left_ankle",
+                "opposite_foot": "right_ankle",
             }
 
     results = model.predict(image, verbose=False)
@@ -148,6 +151,7 @@ def compute_angles(
       - "knee_angle"  (hip–knee–foot)
       - "hip_angle"   (shoulder–hip–knee)
       - "elbow_angle" (shoulder–elbow–hand)
+      - "crank_angle" (knee–foot–opposite_foot)
     """
 
     def pt(name: str) -> Optional[Tuple[float, float]]:
@@ -178,6 +182,10 @@ def compute_angles(
     e = maybe_angle("shoulder", "elbow", "hand")
     if e is not None:
         angles["elbow_angle"] = e
+
+    c = maybe_angle("knee", "foot", "opposite_foot")
+    if c is not None:
+        angles["crank_angle"] = c
 
     return angles
 
@@ -232,5 +240,6 @@ def show_frame_with_data(
     put_angle_text("knee_angle", "knee")
     put_angle_text("hip_angle", "hip")
     put_angle_text("elbow_angle", "elbow")
+    put_angle_text("crank_angle", "foot")
 
     cv2.imshow(window_name, vis)
