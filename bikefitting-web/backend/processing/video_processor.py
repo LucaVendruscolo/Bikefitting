@@ -11,6 +11,7 @@ from tqdm import tqdm
 from .bike_segmenter import BikeSegmenter
 from .angle_predictor import BikeAnglePredictor
 from .pose_detector import PoseDetector
+from .kinematics import fit_sine_wave
 
 
 def draw_angle_indicator(img: np.ndarray, angle: float, label: str, 
@@ -192,6 +193,10 @@ class VideoProcessor:
         joint_angle_history = {"knee": [], "hip": [], "elbow": []}
         frames_with_bike = 0
         frames_with_pose = 0
+
+        # Store timestamps and knee angles for sine wave fitting
+        timestamps = []
+        raw_knee_angles = []
         
         for i in tqdm(range(frames_to_process), desc="Processing"):
             frame_num = start_frame + (i * frame_skip)
@@ -200,20 +205,8 @@ class VideoProcessor:
             
             if not ret:
                 break
-            
-            # Detect pose
-            pose_result = self.pose_detector.detect(frame)
-            detected_side = pose_result["detected_side"]
-            joint_angles = pose_result["angles"]
-            
-            if detected_side:
-                frames_with_pose += 1
-                for key in ["knee", "hip", "elbow"]:
-                    angle_key = f"{key}_angle"
-                    if angle_key in joint_angles:
-                        joint_angle_history[key].append(joint_angles[angle_key])
-            
-            # Segment and predict bike angle
+
+            # Segment and predict bike angle first in ordedr to filter frames based on yaw angle.
             masked, mask, success = self.segmenter.mask_bike(frame)
             
             if success:
@@ -222,6 +215,37 @@ class VideoProcessor:
                 bike_angles.append(bike_angle)
             else:
                 bike_angle, confidence = 0, 0
+            
+            # Detect pose
+            pose_result = self.pose_detector.detect(frame)
+            detected_side = pose_result["detected_side"]
+            joint_angles = pose_result["angles"]
+
+            # --- 3. GATING LOGIC ---
+            # Check if the bike is roughly sideways (between 60 and 120 degrees absolute)
+            # This filters out frames where the rider is turning around or facing the camera
+            is_side_view = success and (abs(bike_angle) >= 60 and abs(bike_angle) <= 120)
+
+
+            # keep timestamps and raw knee angles in order to fit sine function to compute max knee extension later
+            physical_time = frame_num / video_fps
+            timestamps.append(physical_time)
+
+            # Only append the knee angle if we are in a valid side view
+            if is_side_view and 'knee_angle' in joint_angles:
+                raw_knee_angles.append(joint_angles['knee_angle'])
+            else:
+                # Append NaN so the curve fitter ignores this frame
+                raw_knee_angles.append(float("nan"))
+
+            
+            if detected_side:
+                frames_with_pose += 1
+                for key in ["knee", "hip", "elbow"]:
+                    angle_key = f"{key}_angle"
+                    if angle_key in joint_angles:
+                        joint_angle_history[key].append(joint_angles[angle_key])
+            
             
             # Create output frame
             output = np.zeros((out_height, out_width, 3), dtype=np.uint8)
@@ -312,6 +336,17 @@ class VideoProcessor:
         for key in ["knee", "hip", "elbow"]:
             if joint_angle_history[key]:
                 stats[f"avg_{key}_angle"] = float(np.mean(joint_angle_history[key]))
+
+        # Fit sine wave to knee angles to get max extension and cadence
+        knee_fit = fit_sine_wave(timestamps, raw_knee_angles)
+        if knee_fit and knee_fit["r_squared"] > 0.5:
+            stats["knee_max_extension"] = knee_fit["max_extension"]
+            stats["knee_min_flexion"] = knee_fit["min_flexion"]
+            stats["cadence"] = knee_fit["cadence_rpm"]
+            print(f"Robust Fit: Knee Max={knee_fit['max_extension']:.1f}°, Cadence={knee_fit['cadence_rpm']:.0f}rpm")
+        else:
+            stats["knee_max_extension"] = np.nanpercentile(raw_knee_angles, 95)
+            print("Curve fit failed, using percentile fallback.")
         
         print(f"\nProcessing complete!")
         print(f"Output saved to: {output_path}")
