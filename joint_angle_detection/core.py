@@ -128,6 +128,86 @@ def detect_joints(
         return joints_left if joints_left else None
 
 
+# ============================================================================
+# CRANK ANGLE FROM ANKLE POSITIONS
+# ============================================================================
+
+def compute_crank_angle(
+    near_ankle: Tuple[float, float],
+    far_ankle: Tuple[float, float],
+) -> float:
+    """
+    Compute the crank angle from the positions of the near and far ankles.
+    
+    Convention:
+        - 0° = near pedal at 3 o'clock (forward horizontal)
+        - 90° = near pedal at 12 o'clock (top dead center)
+        - 180° = near pedal at 9 o'clock (back horizontal)
+        - 270° = near pedal at 6 o'clock (bottom dead center)
+    
+    Args:
+        near_ankle: (x, y) position of the ankle closer to camera
+        far_ankle: (x, y) position of the ankle farther from camera
+        
+    Returns:
+        Crank angle in degrees [0, 360)
+    """
+    near = np.array(near_ankle)
+    far = np.array(far_ankle)
+    
+    # Crank center is midpoint between the two ankles
+    center = (near + far) / 2
+    
+    # Vector from center to near ankle
+    vec = near - center
+    
+    # Calculate angle using atan2
+    # In image coordinates: +x is right, +y is DOWN
+    # We negate y to convert to standard math coordinates (y up)
+    angle_rad = np.arctan2(-vec[1], vec[0])
+    
+    # Convert to degrees and normalize to [0, 360)
+    angle_deg = np.degrees(angle_rad)
+    if angle_deg < 0:
+        angle_deg += 360
+    
+    return float(angle_deg)
+
+
+def compute_crank_angle_from_joints(
+    joints: Dict[str, Tuple[float, float, float]],
+    min_conf: float = 0.7,
+) -> Optional[float]:
+    """
+    Compute crank angle from the joints dict returned by detect_joints.
+    
+    Args:
+        joints: Dict containing "foot" and "opposite_foot" keys
+        min_conf: Minimum confidence threshold (default 0.7 = 70%)
+        
+    Returns:
+        Crank angle in degrees [0, 360), or None if ankles not detected
+        or confidence is below threshold
+    """
+    if joints is None:
+        return None
+    
+    if "foot" not in joints or "opposite_foot" not in joints:
+        return None
+    
+    # Check confidence - return None if below 40%
+    opp_conf = joints["opposite_foot"][2]
+    
+    if opp_conf < min_conf:
+        #print(f"Warning: Opposite foot confidence {opp_conf:.2f} < {min_conf}, skipping crank detection...")
+        return None
+    
+    near_ankle = (joints["foot"][0], joints["foot"][1])
+    far_ankle = (joints["opposite_foot"][0], joints["opposite_foot"][1])
+
+    return compute_crank_angle(near_ankle, far_ankle)
+
+
 # 2) JOINT POSITIONS -> ANGLES (same 6 joints, single side)
 def _angle(a: Tuple[float, float], b: Tuple[float, float], c: Tuple[float, float]) -> float:
     """Return angle ABC in degrees given points a,b,c as (x,y)."""
@@ -151,7 +231,7 @@ def compute_angles(
       - "knee_angle"  (hip–knee–foot)
       - "hip_angle"   (shoulder–hip–knee)
       - "elbow_angle" (shoulder–elbow–hand)
-      - "crank_angle" (knee–foot–opposite_foot)
+      - "crank_angle" (custom formula from ankle positions)
     """
 
     def pt(name: str) -> Optional[Tuple[float, float]]:
@@ -183,7 +263,7 @@ def compute_angles(
     if e is not None:
         angles["elbow_angle"] = e
 
-    c = maybe_angle("knee", "foot", "opposite_foot")
+    c = compute_crank_angle_from_joints(joints)
     if c is not None:
         angles["crank_angle"] = c
 
@@ -204,11 +284,12 @@ def show_frame_with_data(
     frame: np.ndarray,
     joints: Optional[Dict[str, Tuple[float, float, float]]],
     angles: Dict[str, float],
+    crank_angle: Optional[float] = None,
     window_name: str = "Bike Fitting",
-) -> None:
+) -> np.ndarray:
     """
     Takes the frame, the joint positions and the angles,
-    draws them, and shows a live window.
+    draws them, shows a live window, and returns the annotated frame.
     """
     vis = frame.copy()
 
@@ -235,6 +316,18 @@ def show_frame_with_data(
             2,
             cv2.LINE_AA,
         )
+        if crank_angle is not None and angle_key == "crank_angle":
+            text_crank = f"crank_angle: {crank_angle:.1f}°"
+            cv2.putText(
+                vis,
+                text_crank,
+                (int(x) + 10, int(y) + 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
 
     # We have only one side, so just label near those joints
     put_angle_text("knee_angle", "knee")
@@ -243,3 +336,4 @@ def show_frame_with_data(
     put_angle_text("crank_angle", "foot")
 
     cv2.imshow(window_name, vis)
+    return vis
