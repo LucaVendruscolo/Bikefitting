@@ -113,7 +113,7 @@ def interpolate_crank_angle_gp(video_df: pd.DataFrame) -> pd.DataFrame:
     X_pred_scaled = scaler.transform(X_pred)
     
     #params:
-    periodici = 8
+    periodici = 25
     noise = .05
 
     kernel = (
