@@ -9,7 +9,10 @@ from sklearn.gaussian_process.kernels import (
     ExpSineSquared, Matern
 )
 from sklearn.preprocessing import StandardScaler
-
+'''
+This script tries to clean the data by removing low-confidence or high-confidence erroneous points
+Then uses a GP to attempt at filling in missing crank angle
+'''
 
 def parse_args():
     p = argparse.ArgumentParser()
@@ -25,12 +28,15 @@ def remove_erroneous_points(df: pd.DataFrame, min_conf: float = 0.8) -> pd.DataF
         'foot_conf', 'opposite_foot_conf'
     ]
 
+    #if bike_angle_deg is in df, include
     if 'bike_angle_deg' in df.columns:
         required_cols.insert(0, 'bike_angle_deg')
     
+    # Remove rows with missing required features
     missing_features = df[required_cols].isna().any(axis=1)
     df = df[~missing_features].reset_index(drop=True)
     
+    # Remove rows with low confidence
     low_conf = (df["foot_conf"] < min_conf) | (df["opposite_foot_conf"] < min_conf)
     df.loc[low_conf, "detected_crank_angle"] = np.nan
     
@@ -80,12 +86,14 @@ def interpolate_crank_angle_gp(video_df: pd.DataFrame) -> pd.DataFrame:
         'opposite_foot_x', 'opposite_foot_y'
     ]
     
+    #if we have real or interpolated bike angle, include
     if 'bike_angle_deg' in result_df.columns:
         feature_cols.insert(0, 'bike_angle_deg')
 
     valid_mask = ~pd.isna(result_df["detected_crank_angle"])
     missing_mask = ~valid_mask
     
+    #edge case of no missing
     if missing_mask.sum() == 0:
         result_df["crank_angle_filled"] = result_df["detected_crank_angle"]
         result_df["crank_angle_interpolated"] = False
@@ -104,9 +112,13 @@ def interpolate_crank_angle_gp(video_df: pd.DataFrame) -> pd.DataFrame:
     X_train_scaled = scaler.fit_transform(X_train)
     X_pred_scaled = scaler.transform(X_pred)
     
+    #params:
+    periodici = 8
+    noise = .05
+
     kernel = (
-        C(1.0) * ExpSineSquared(length_scale=1.0, periodicity=1.0) +
-        WhiteKernel(noise_level=0.1)
+        C(.5) * ExpSineSquared(length_scale=1.0, periodicity=periodici) +
+        WhiteKernel(noise_level=noise)
     )
     
     gp_sin = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=6)
