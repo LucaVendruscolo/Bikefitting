@@ -14,26 +14,30 @@ This script tries to clean the data by removing low-confidence or high-confidenc
 Then uses a GP to attempt at filling in missing crank angle
 '''
 
-def parse_args():
-    p = argparse.ArgumentParser()
-    p.add_argument("--method", type=str, default="gp", choices=["linear", "gp"])
-    return p.parse_args()
-
-def remove_erroneous_points(df: pd.DataFrame, min_conf: float = 0.8) -> pd.DataFrame:
-    df = df.copy()
-    
-    required_cols = [
+REQUIRED_COLS = [
         'detected_knee_angle', 'detected_hip_angle', 'detected_elbow_angle',
         'foot_x', 'foot_y', 'opposite_foot_x', 'opposite_foot_y',
         'foot_conf', 'opposite_foot_conf'
-    ]
+    ]   
+
+def parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("--method", type=str, default="gp", choices=["linear", "gp"])
+    p.add_argument("--input_csv", type=str, required=False, default="output/synchronized_dataset.csv")
+    p.add_argument("--min_conf", type=float, default=0.8, help="Minimum confidence to consider a point valid")
+    return p.parse_args()
+
+def remove_erroneous_points(df: pd.DataFrame, min_conf: float) -> pd.DataFrame:
+    df = df.copy()
+    
+    cols = REQUIRED_COLS.copy()
 
     #if bike_angle_deg is in df, include
     if 'bike_angle_deg' in df.columns:
-        required_cols.insert(0, 'bike_angle_deg')
+        cols.insert(0, 'bike_angle_deg')
     
     # Remove rows with missing required features
-    missing_features = df[required_cols].isna().any(axis=1)
+    missing_features = df[cols].isna().any(axis=1)
     df = df[~missing_features].reset_index(drop=True)
     
     # Remove rows with low confidence
@@ -87,8 +91,8 @@ def interpolate_crank_angle_gp(video_df: pd.DataFrame) -> pd.DataFrame:
     ]
     
     #if we have real or interpolated bike angle, include
-    if 'bike_angle_deg' in result_df.columns:
-        feature_cols.insert(0, 'bike_angle_deg')
+    #if 'bike_angle_deg' in result_df.columns:
+    #    feature_cols.insert(0, 'bike_angle_deg')
 
     valid_mask = ~pd.isna(result_df["detected_crank_angle"])
     missing_mask = ~valid_mask
@@ -172,13 +176,13 @@ def interpolate_crank_angle(df: pd.DataFrame, method: str = "linear") -> pd.Data
 
 def main():
     args = parse_args()
-    
-    input_path = Path("output/synchronized_dataset.csv")
+
+    input_path = args.input_csv
     output_path = Path("output/synchronized_dataset_filled.csv")
     
     df = pd.read_csv(input_path)
-    df = remove_erroneous_points(df, min_conf=0.8)
-    
+    df = remove_erroneous_points(df, min_conf=args.min_conf)
+
     if "detected_crank_angle" not in df.columns:
         print("Error: 'detected_crank_angle' not found")
         return

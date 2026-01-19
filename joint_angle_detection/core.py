@@ -23,6 +23,7 @@ def detect_joints(
     image: np.ndarray,
     model: YOLO,
     side: str = "auto",        # "right", "left" or "auto"
+    bike_angle: float = None,
     min_conf: float = 0.5,
 ) -> Optional[Dict[str, Tuple[float, float, float]]]:
     """
@@ -142,7 +143,8 @@ def _angle(a: Tuple[float, float], b: Tuple[float, float], c: Tuple[float, float
 
 
 def compute_angles(
-    joints: Dict[str, Tuple[float, float, float]]
+    joints: Dict[str, Tuple[float, float, float]],
+    bike_angle: float = None
 ) -> Dict[str, float]:
     """
     Takes the joint dict from detect_joints and returns a dict of angles
@@ -153,11 +155,22 @@ def compute_angles(
       - "elbow_angle" (shoulder–elbow–hand)
       - "crank_angle" (knee–foot–opposite_foot)
     """
+    def adjust_from_bike_angle(vector: np.ndarray, bike_angle: float) -> np.ndarray:
+        if bike_angle is None:
+            return vector[0,0],vector[0,1]
+        #print("VECTOR:", vector)
+        # Simple adjustment: rotate the vector by the bike angle
+        rotation_matrix = cv2.getRotationMatrix2D((0, 0), bike_angle, 1)
+        adjusted_vector = cv2.warpAffine(vector, rotation_matrix, (vector.shape[1], vector.shape[0]))
+        #print("ADJUSTED VECTOR:", adjusted_vector)
 
+        return adjusted_vector[0, 0], adjusted_vector[0, 1]
+    
     def pt(name: str) -> Optional[Tuple[float, float]]:
         if name not in joints:
             return None
         x, y, _ = joints[name]
+        x, y = adjust_from_bike_angle(np.array([[x, y]]), bike_angle)
         return (x, y)
 
     def maybe_angle(a: str, b: str, c: str) -> Optional[float]:
@@ -190,6 +203,7 @@ def compute_angles(
     return angles
 
 
+
 # 3) CAMERA INPUT (SOURCE 0)
 def open_camera(source: int = 0) -> cv2.VideoCapture:
     """
@@ -204,6 +218,7 @@ def show_frame_with_data(
     frame: np.ndarray,
     joints: Optional[Dict[str, Tuple[float, float, float]]],
     angles: Dict[str, float],
+    bike_angle: Optional[float] = None,
     window_name: str = "Bike Fitting",
 ) -> None:
     """
@@ -211,6 +226,13 @@ def show_frame_with_data(
     draws them, and shows a live window.
     """
     vis = frame.copy()
+
+    # Draw bike angle in top right if available
+    if bike_angle is not None:
+        text = f"Bike: {bike_angle:.1f} deg"
+        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+        cv2.putText(vis, text, (vis.shape[1] - tw - 10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2, cv2.LINE_AA)
 
     # Draw joints
     if joints:
