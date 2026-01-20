@@ -15,11 +15,17 @@ interface FrameData {
   hip_angle: number | null
   elbow_angle: number | null
   detected_side: string | null
+  is_valid?: boolean
 }
 
 interface ProcessingResult {
   resultUrl: string
-  stats: { frames_processed: number; output_fps?: number }
+  stats: { 
+    frames_processed: number
+    output_fps?: number
+    valid_frames?: number
+    recommendations?: Record<string, unknown>
+  }
   frameData?: FrameData[]
 }
 
