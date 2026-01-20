@@ -1,6 +1,6 @@
 """
-Smart Bike Fitter - Uses Bayesian Optimization to estimate bike fit metrics from video.
-Refactored to match ALSimExperiment implementation logic.
+Instead of processing ALL frames, uses uncertainty-based acquisition to 
+sample only ~30 frames, then fits GPs to predict the full joint angle curves.
 """
 
 import cv2
@@ -23,10 +23,6 @@ from pose_detector import PoseDetector
 
 class ALSimExperiment:
     def __init__(self, timestamps, kernel_type='matern', acq_strategy='uncertainty'):
-        """
-        Adapted ALSimExperiment for live video processing.
-        Unlike the benchmark, we don't provide y_values upfront. 
-        """
         self.timestamps = timestamps
         self.total_frames = len(timestamps)
         
@@ -447,10 +443,7 @@ class SmartBikeFitter:
         }
 
 
-
-# ==========================================
-# MAIN EXECUTION
-# ==========================================
+# Main Execution
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Smart Bike Fitter using Bayesian Optimization")
     parser.add_argument("video", help="Path to the input video file")

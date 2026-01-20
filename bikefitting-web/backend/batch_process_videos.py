@@ -1,3 +1,7 @@
+"""
+Batch process all videos and output time
+"""
+
 import os
 import sys
 import glob
@@ -8,9 +12,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from processing.video_processor import VideoProcessor
 
 def main():
-    # ==========================================
-    # 1. CONFIGURATION
-    # ==========================================
+    # Configurations
     input_folder = "C:/Users/fivos/Videos/bike-videos"   #  source folder
     output_folder = "processed_results"                  # output folder
     model_path = "../../models/best_model.pt"            #  model path
@@ -19,9 +21,7 @@ def main():
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
 
-    # ==========================================
-    # 2. INITIALIZE PROCESSOR
-    # ==========================================
+    # Initialize processor
     if not os.path.exists(model_path):
         print(f"Error: Model not found at {model_path}")
         return
@@ -33,10 +33,8 @@ def main():
         print(f"Failed to load models: {e}")
         return
 
-    # ==========================================
-    # 3. BATCH PROCESS
-    # ==========================================
-    # Find all MP4 files
+    # Batch process videos
+    # Find all MP4 and MOV files
     mp4_files = glob.glob(os.path.join(input_folder, "*.mp4"))
     mov_files = glob.glob(os.path.join(input_folder, "*.mov"))
     
@@ -64,7 +62,7 @@ def main():
             processor.process_video(
                 input_path=video_path,
                 output_path=save_video_path,
-                csv_path=save_csv_path,  # <--- PASSING THE PATH HERE
+                csv_path=save_csv_path, 
                 output_fps=30
             )
             
