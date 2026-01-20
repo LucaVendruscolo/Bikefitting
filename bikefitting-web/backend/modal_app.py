@@ -387,25 +387,28 @@ class PoseDetector:
         conns = SKELETON_RIGHT if detected_side == "right" else SKELETON_LEFT
         side_joints = [f"{detected_side}_{j}" for j in ["shoulder", "elbow", "wrist", "hip", "knee", "ankle"]]
         
+        # Higher confidence threshold - only show if YOLO is confident
+        min_conf = 0.6
+        
         # Draw skeleton lines (yellow with black outline)
         for start_name, end_name in conns:
             si, ei = KPT_IDX[start_name], KPT_IDX[end_name]
-            if kpts_conf[si] < 0.3 or kpts_conf[ei] < 0.3:
+            if kpts_conf[si] < min_conf or kpts_conf[ei] < min_conf:
                 continue
             sp = (int(kpts_xy[si][0] * scale), int(kpts_xy[si][1] * scale))
             ep = (int(kpts_xy[ei][0] * scale), int(kpts_xy[ei][1] * scale))
-            cv2.line(vis, sp, ep, (0, 0, 0), 7)
-            cv2.line(vis, sp, ep, (0, 255, 255), 4)
+            cv2.line(vis, sp, ep, (0, 0, 0), 3)
+            cv2.line(vis, sp, ep, (0, 255, 255), 2)
         
-        # Draw joint circles (magenta with white border)
+        # Draw smaller joint circles (magenta with white border)
         for jn in side_joints:
             idx = KPT_IDX[jn]
-            if kpts_conf[idx] < 0.3:
+            if kpts_conf[idx] < min_conf:
                 continue
             pt = (int(kpts_xy[idx][0] * scale), int(kpts_xy[idx][1] * scale))
-            cv2.circle(vis, pt, 12, (0, 0, 0), -1)
-            cv2.circle(vis, pt, 10, (255, 0, 255), -1)
-            cv2.circle(vis, pt, 10, (255, 255, 255), 2)
+            cv2.circle(vis, pt, 5, (0, 0, 0), -1)
+            cv2.circle(vis, pt, 4, (255, 0, 255), -1)
+            cv2.circle(vis, pt, 4, (255, 255, 255), 1)
         
         return vis
 ''')
@@ -548,19 +551,22 @@ class ALSimExperiment:
 
 
 def generate_recommendations(results):
-    """Generate bike fit recommendations from GP-predicted metrics."""
+    """Generate bike fit recommendations from GP-predicted metrics (matches Fivos's output)."""
     k_max = results.get("max_knee_ext", 0)
     k_min = results.get("min_knee_flex", 70)
+    h_min = results.get("min_hip_angle", 60)
     e_avg = results.get("avg_elbow_angle", 155)
     
     rec = {
         "saddle_height": {"status": "ok", "action": None, "adjustment_mm": 0, "details": ""},
         "saddle_fore_aft": {"status": "ok", "action": None, "adjustment_mm": 0, "details": ""},
+        "crank_length": {"status": "ok", "action": None, "details": ""},
         "cockpit": {"status": "ok", "reach_action": None, "adjustment_mm": 0, "details": ""},
         "summary": [],
         "metrics": {
             "knee_max_extension": round(k_max, 1) if k_max else None,
             "knee_min_flexion": round(k_min, 1) if k_min else None,
+            "min_hip_angle": round(h_min, 1) if h_min else None,
             "avg_elbow_angle": round(e_avg, 1) if e_avg else None
         }
     }
@@ -569,7 +575,7 @@ def generate_recommendations(results):
         rec["summary"].append("Not enough data")
         return rec
     
-    # Saddle Height (target: 140-150 deg knee extension)
+    # 1. Saddle Height (target: 140-150 deg knee extension)
     if k_max < 140:
         mm = (140 - k_max) * 2.0
         rec["saddle_height"] = {"status": "low", "action": "raise", "adjustment_mm": round(mm),
@@ -581,10 +587,10 @@ def generate_recommendations(results):
                                 "details": f"Knee ext {k_max:.0f}° - overextension risk. Lower ~{mm:.0f}mm."}
         rec["summary"].append(f"Lower saddle ~{mm:.0f}mm")
     else:
-        rec["saddle_height"]["details"] = f"Knee ext {k_max:.0f}° is optimal."
+        rec["saddle_height"]["details"] = f"Knee ext {k_max:.0f}° is optimal (140-150°)."
         rec["summary"].append("Saddle height optimal")
     
-    # Saddle Fore/Aft (target: knee flexion >70 at top of stroke)
+    # 2. Saddle Fore/Aft (target: knee flexion >70 at top of stroke)
     if k_min < 70:
         rec["saddle_fore_aft"] = {"status": "forward", "action": "move_back", "adjustment_mm": 10,
                                   "details": f"Knee closed at top ({k_min:.0f}°). Move back 5-10mm."}
@@ -592,7 +598,15 @@ def generate_recommendations(results):
     else:
         rec["saddle_fore_aft"]["details"] = f"Knee clearance at top ({k_min:.0f}°) is good."
     
-    # Cockpit / Stem (target: elbow 150-165 deg)
+    # 3. Crank Length (impingement check: hip <48 or knee <68)
+    if h_min < 48 or k_min < 68:
+        rec["crank_length"] = {"status": "issue", "action": "consider_shorter",
+                               "details": f"Hip {h_min:.0f}° / Knee {k_min:.0f}° indicates impingement. Consider shorter cranks (-5mm)."}
+        rec["summary"].append("Consider shorter cranks")
+    else:
+        rec["crank_length"]["details"] = f"Hip clearance ({h_min:.0f}°) is adequate. No impingement."
+    
+    # 4. Cockpit / Stem (target: elbow 150-160 deg)
     if e_avg > 165:
         mm = max(10, ((e_avg - 160) / 5) * 10)
         rec["cockpit"] = {"status": "issue", "reach_action": "shorten", "adjustment_mm": round(mm),
@@ -604,7 +618,7 @@ def generate_recommendations(results):
                           "details": f"Arms bent ({e_avg:.0f}°). Lengthen stem ~{mm:.0f}mm."}
         rec["summary"].append(f"Lengthen stem ~{mm:.0f}mm")
     else:
-        rec["cockpit"]["details"] = f"Elbow angle ({e_avg:.0f}°) is in optimal range."
+        rec["cockpit"]["details"] = f"Elbow angle ({e_avg:.0f}°) is in optimal range (150-160°)."
     
     return rec
 
@@ -723,6 +737,7 @@ class VideoProcessor:
         results = {
             "max_knee_ext": float(np.max(pred_knee)) if pred_knee is not None else 0,
             "min_knee_flex": float(np.min(pred_knee)) if pred_knee is not None else 70,
+            "min_hip_angle": float(np.min(pred_hip)) if pred_hip is not None else 60,
             "avg_elbow_angle": float(np.mean(pred_elbow)) if pred_elbow is not None else 155
         }
         
@@ -757,6 +772,7 @@ class VideoProcessor:
             "valid_frames": len(valid_frames),
             "knee_max_extension": results["max_knee_ext"],
             "knee_min_flexion": results["min_knee_flex"],
+            "min_hip_angle": results["min_hip_angle"],
             "avg_elbow_angle": results["avg_elbow_angle"],
             "recommendations": recommendations,
             "method": "Gaussian Process Active Learning"
