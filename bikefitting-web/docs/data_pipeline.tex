@@ -1,0 +1,600 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{geometry}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+\geometry{margin=2.5cm}
+
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{codepurple},
+    commentstyle=\color{codegreen},
+    stringstyle=\color{codegray},
+    breaklines=true,
+    frame=single
+}
+
+\title{BikeFit AI: Data Pipeline Architecture}
+\author{Technical Documentation}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This document describes the complete data processing pipeline for the BikeFit AI web application. The system uses a combination of computer vision, Bayesian optimisation with Gaussian Processes, and biomechanical heuristics to analyse cycling videos and generate bike fit recommendations. The pipeline is designed for efficiency, processing only $\sim$30 intelligently selected frames rather than the entire video.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%==============================================================================
+\section{System Overview}
+%==============================================================================
+
+The BikeFit AI system consists of two main components:
+
+\begin{enumerate}
+    \item \textbf{Frontend}: A Next.js web application that handles video upload and displays results
+    \item \textbf{Backend}: A Modal serverless GPU function that performs the video analysis
+\end{enumerate}
+
+The data flows through seven main stages:
+
+\begin{enumerate}
+    \item Video Upload and Transmission
+    \item Frame Scanning and Validation
+    \item Active Learning Frame Selection
+    \item Pose Detection and Angle Extraction
+    \item Perspective Distortion Correction
+    \item Gaussian Process Curve Prediction
+    \item Recommendation Generation
+\end{enumerate}
+
+%==============================================================================
+\section{Stage 1: Video Upload and Transmission}
+%==============================================================================
+
+\subsection{Frontend Processing}
+
+When a user drops or selects a video file, the frontend performs the following steps:
+
+\begin{enumerate}
+    \item \textbf{File Validation}: Check that the file is a valid video format (MP4, MOV, AVI) and does not exceed 200MB
+    \item \textbf{Base64 Encoding}: Convert the video file to Base64 string for transmission
+    \item \textbf{HTTP Request}: Send a POST request to the Modal serverless endpoint with the encoded video
+\end{enumerate}
+
+\subsection{Server-Sent Events (SSE)}
+
+The backend streams progress updates back to the frontend using Server-Sent Events. This allows real-time progress indication without polling:
+
+\begin{lstlisting}[language=Python]
+yield f"data: {json.dumps({
+    'type': 'progress',
+    'message': 'Analyzing video...',
+    'percent': 50
+})}\n\n"
+\end{lstlisting}
+
+\subsection{Backend Initialisation}
+
+Upon receiving the video, the Modal backend:
+
+\begin{enumerate}
+    \item Decodes the Base64 video data
+    \item Writes it to a temporary file on the serverless container
+    \item Loads the required AI models (cached between requests)
+\end{enumerate}
+
+%==============================================================================
+\section{Stage 2: Frame Scanning and Validation}
+%==============================================================================
+
+Not all frames in a cycling video are suitable for analysis. The system must identify frames where:
+\begin{itemize}
+    \item A bicycle is clearly visible
+    \item The bicycle is viewed from approximately side-on (profile view)
+    \item The cyclist's body is not occluded
+\end{itemize}
+
+\subsection{Bike Segmentation}
+
+The first step uses YOLOv8 segmentation to detect and isolate the bicycle:
+
+\begin{algorithm}
+\caption{Bike Segmentation}
+\begin{algorithmic}[1]
+\Require Frame image $I$
+\Ensure Masked bike image $M_{224}$, success flag
+\State $results \gets \text{YOLO}(I)$
+\For{each detection in $results$}
+    \If{class = bicycle (COCO class 1)}
+        \State $mask \gets$ segmentation mask
+        \State Dilate $mask$ with $15 \times 15$ kernel
+        \State Compute bounding box and crop to square
+        \State Apply mask to cropped region
+        \State Resize to $224 \times 224$
+        \State \Return $(M_{224}, \text{True})$
+    \EndIf
+\EndFor
+\State \Return $(\text{zeros}(224, 224, 3), \text{False})$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Bike Angle Prediction}
+
+A custom-trained ConvNeXt model predicts the bicycle's yaw angle relative to the camera:
+
+\begin{itemize}
+    \item \textbf{Input}: $224 \times 224$ masked bike image
+    \item \textbf{Output}: 120-bin classification over $[0°, 360°)$
+    \item \textbf{Angle Computation}: Circular mean of softmax probabilities
+\end{itemize}
+
+The angle prediction uses soft classification with circular mean to handle the wraparound at $0°/360°$:
+
+\begin{equation}
+    \theta = \arctan2\left(\sum_{i} p_i \sin(\theta_i), \sum_{i} p_i \cos(\theta_i)\right)
+\end{equation}
+
+where $p_i$ is the softmax probability for bin $i$ and $\theta_i$ is the centre angle of bin $i$.
+
+\subsection{Side-View Gating}
+
+Only frames with the bike at approximately $90°$ to the camera are retained:
+
+\begin{equation}
+    \text{valid} = 60° \leq |\theta| \leq 120°
+\end{equation}
+
+This gating ensures that:
+\begin{itemize}
+    \item Joint angles can be accurately measured in 2D
+    \item Perspective distortion is minimised
+    \item The cyclist's near-side limbs are visible
+\end{itemize}
+
+\subsection{Scan Parameters}
+
+\begin{itemize}
+    \item \textbf{Scan Rate}: 30 fps (subsampled from original video)
+    \item \textbf{Maximum Duration}: 120 seconds
+    \item \textbf{Minimum Valid Frames}: 10 (otherwise analysis fails)
+\end{itemize}
+
+%==============================================================================
+\section{Stage 3: Active Learning Frame Selection}
+%==============================================================================
+
+Rather than processing all valid frames (which could be hundreds), the system uses Gaussian Process-based active learning to intelligently select approximately 30 frames that maximise information gain.
+
+\subsection{Motivation}
+
+Joint angles during cycling follow a periodic pattern corresponding to the pedal stroke. By modelling this pattern with a Gaussian Process, we can:
+
+\begin{enumerate}
+    \item Estimate the full angle curve from sparse observations
+    \item Quantify uncertainty at unobserved time points
+    \item Select new samples where uncertainty is highest
+\end{enumerate}
+
+\subsection{Gaussian Process Model}
+
+For each joint angle (knee, hip, elbow), we maintain a separate GP:
+
+\begin{equation}
+    f(t) \sim \mathcal{GP}(0, k(t, t'))
+\end{equation}
+
+where $k(t, t')$ is the covariance function. We use an RBF (Radial Basis Function) kernel:
+
+\begin{equation}
+    k(t, t') = \sigma^2 \exp\left(-\frac{(t - t')^2}{2\ell^2}\right)
+\end{equation}
+
+The lengthscale $\ell$ is given a Gamma prior informed by typical pedalling cadence:
+
+\begin{equation}
+    \ell \sim \text{Gamma}(2.0, 2.0 / \ell_{\text{target}})
+\end{equation}
+
+where $\ell_{\text{target}} = 0.4s / \sigma_t$ (normalised by time standard deviation).
+
+\subsection{Acquisition Strategy}
+
+The system uses \textbf{joint uncertainty} acquisition, prioritising frames where multiple joint angles have high predictive variance:
+
+\begin{algorithm}
+\caption{Joint Uncertainty Acquisition}
+\begin{algorithmic}[1]
+\Require Knee GP $\mathcal{M}_k$, Hip GP $\mathcal{M}_h$, visited indices $V$
+\Ensure Next frame index to sample
+\State $C \gets \{0, 1, \ldots, N-1\} \setminus V$ \Comment{Candidate indices}
+\State $\sigma^2_k \gets \text{Var}[\mathcal{M}_k(t_C)]$ \Comment{Knee variance at candidates}
+\State $\sigma^2_h \gets \text{Var}[\mathcal{M}_h(t_C)]$ \Comment{Hip variance at candidates}
+\State $\sigma^2_{\text{joint}} \gets 0.8 \cdot \sigma^2_k + 0.2 \cdot \sigma^2_h$ \Comment{Weighted combination}
+\State Apply spatial suppression near wasted indices
+\State \Return $\arg\max_c \sigma^2_{\text{joint}}[c]$
+\end{algorithmic}
+\end{algorithm}
+
+The weighting (80\% knee, 20\% hip) reflects the greater importance of knee angle for saddle height determination.
+
+\subsection{Spatial Suppression}
+
+When a frame fails pose detection (``wasted'' sample), nearby frames are suppressed to avoid repeated failures in similar regions:
+
+\begin{equation}
+    \sigma^2_{\text{joint}}[c] \gets -1 \quad \text{if} \quad \min_{w \in W} |t_c - t_w| < 1.0s
+\end{equation}
+
+\subsection{Initialisation and Optimisation}
+
+\begin{enumerate}
+    \item \textbf{Initialisation}: 5 random frames are sampled to bootstrap the GP
+    \item \textbf{Hyperparameter Optimisation}: Every 5 samples, GP hyperparameters are re-fitted using marginal likelihood maximisation
+    \item \textbf{Termination}: After 30 samples (or when no candidates remain)
+\end{enumerate}
+
+%==============================================================================
+\section{Stage 4: Pose Detection and Angle Extraction}
+%==============================================================================
+
+For each selected frame, human pose is detected using YOLOv8-pose.
+
+\subsection{Keypoint Detection}
+
+YOLOv8-pose detects 17 COCO keypoints:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{cl|cl}
+\toprule
+Index & Keypoint & Index & Keypoint \\
+\midrule
+0 & Nose & 9 & Left Wrist \\
+1 & Left Eye & 10 & Right Wrist \\
+2 & Right Eye & 11 & Left Hip \\
+3 & Left Ear & 12 & Right Hip \\
+4 & Right Ear & 13 & Left Knee \\
+5 & Left Shoulder & 14 & Right Knee \\
+6 & Right Shoulder & 15 & Left Ankle \\
+7 & Left Elbow & 16 & Right Ankle \\
+8 & Right Elbow & & \\
+\bottomrule
+\end{tabular}
+\caption{COCO keypoint indices}
+\end{table}
+
+\subsection{Side Detection}
+
+The system automatically determines which side of the cyclist is facing the camera by counting confident keypoint detections:
+
+\begin{equation}
+    \text{side} = \begin{cases}
+        \text{right} & \text{if } |\{k : \text{conf}_k^R > 0.5\}| \geq |\{k : \text{conf}_k^L > 0.5\}| \\
+        \text{left} & \text{otherwise}
+    \end{cases}
+\end{equation}
+
+\subsection{Joint Angle Calculation}
+
+Three key angles are computed using the detected keypoints:
+
+\subsubsection{Knee Angle}
+
+The angle at the knee joint, measured between hip, knee, and ankle:
+
+\begin{equation}
+    \theta_{\text{knee}} = \angle(\vec{v}_{\text{hip} \to \text{knee}}, \vec{v}_{\text{ankle} \to \text{knee}})
+\end{equation}
+
+\subsubsection{Hip Angle}
+
+The angle at the hip joint, measured between shoulder, hip, and knee:
+
+\begin{equation}
+    \theta_{\text{hip}} = \angle(\vec{v}_{\text{shoulder} \to \text{hip}}, \vec{v}_{\text{knee} \to \text{hip}})
+\end{equation}
+
+\subsubsection{Elbow Angle}
+
+The angle at the elbow joint, measured between shoulder, elbow, and wrist:
+
+\begin{equation}
+    \theta_{\text{elbow}} = \angle(\vec{v}_{\text{shoulder} \to \text{elbow}}, \vec{v}_{\text{wrist} \to \text{elbow}})
+\end{equation}
+
+\subsection{Angle Computation}
+
+The angle between two vectors is computed using the dot product:
+
+\begin{equation}
+    \theta = \arccos\left(\frac{\vec{u} \cdot \vec{v}}{|\vec{u}||\vec{v}|}\right)
+\end{equation}
+
+Values are returned in degrees. If any required keypoint has confidence below 0.5, the angle is marked as invalid (NaN).
+
+\subsection{Confidence Threshold}
+
+Only keypoints with confidence $> 0.5$ are used for angle calculation. If required keypoints are missing, the frame is added to the ``wasted'' set and spatial suppression is applied.
+
+\subsection{Perspective Distortion Correction}
+
+When the bicycle is not perfectly perpendicular to the camera (i.e., yaw $\neq 90°$), the measured 2D joint angles are subject to perspective distortion. The angles appear compressed due to foreshortening.
+
+\subsubsection{Correction Factor}
+
+The correction factor is derived from the camera geometry. For a bike at yaw angle $\theta$, the deviation from side-view is:
+
+\begin{equation}
+    \delta = |\theta - 90°|
+\end{equation}
+
+The measured angle is related to the true angle by the cosine of the deviation:
+
+\begin{equation}
+    \theta_{\text{measured}} \approx \theta_{\text{true}} \cdot \cos(\delta)
+\end{equation}
+
+Therefore, the correction factor is:
+
+\begin{equation}
+    f_{\text{correction}} = \frac{1}{\cos(\delta)}
+\end{equation}
+
+And the corrected angle is:
+
+\begin{equation}
+    \theta_{\text{corrected}} = \theta_{\text{measured}} \times f_{\text{correction}}
+\end{equation}
+
+\subsubsection{Example}
+
+For a bicycle at yaw angle $80°$ (i.e., $10°$ off from perfect side-view):
+
+\begin{itemize}
+    \item Deviation: $\delta = |80° - 90°| = 10°$
+    \item Correction factor: $f = 1 / \cos(10°) \approx 1.015$
+    \item If measured knee angle is $140°$, corrected angle is $140° \times 1.015 \approx 142°$
+\end{itemize}
+
+\subsubsection{Implementation}
+
+The correction is applied during the \texttt{\_process\_sample} method:
+
+\begin{lstlisting}[language=Python]
+deviation_deg = abs(abs(yaw) - 90)
+deviation_rad = np.radians(deviation_deg)
+correction_factor = 1.0 / np.cos(deviation_rad)
+
+knee_angle = measured_knee * correction_factor
+hip_angle = measured_hip * correction_factor
+elbow_angle = measured_elbow * correction_factor
+\end{lstlisting}
+
+This correction is only applied for frames within the $\pm 30°$ gating range (i.e., $60° - 120°$), where the correction factor ranges from $1.0$ (at $90°$) to approximately $1.15$ (at $60°$ or $120°$).
+
+%==============================================================================
+\section{Stage 5: Gaussian Process Curve Prediction}
+%==============================================================================
+
+After sampling is complete, the GP models are used to predict the full joint angle curves.
+
+\subsection{Posterior Prediction}
+
+Given observations $\mathbf{y}$ at times $\mathbf{t}$, the GP posterior at all valid frame times $\mathbf{t}_*$ is:
+
+\begin{align}
+    \mathbb{E}[f(\mathbf{t}_*)] &= K(\mathbf{t}_*, \mathbf{t}) [K(\mathbf{t}, \mathbf{t}) + \sigma_n^2 I]^{-1} \mathbf{y} \\
+    \text{Var}[f(\mathbf{t}_*)] &= K(\mathbf{t}_*, \mathbf{t}_*) - K(\mathbf{t}_*, \mathbf{t}) [K(\mathbf{t}, \mathbf{t}) + \sigma_n^2 I]^{-1} K(\mathbf{t}, \mathbf{t}_*)
+\end{align}
+
+\subsection{Key Metrics Extraction}
+
+From the predicted curves, the following metrics are extracted:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lll}
+\toprule
+Metric & Computation & Biomechanical Meaning \\
+\midrule
+Max Knee Extension & $\max_t \hat{f}_{\text{knee}}(t)$ & Leg straightness at bottom of stroke \\
+Min Knee Flexion & $\min_t \hat{f}_{\text{knee}}(t)$ & Knee bend at top of stroke \\
+Min Hip Angle & $\min_t \hat{f}_{\text{hip}}(t)$ & Hip closure at top of stroke \\
+Avg Elbow Angle & $\frac{1}{N}\sum_t \hat{f}_{\text{elbow}}(t)$ & Arm bend on handlebars \\
+\bottomrule
+\end{tabular}
+\caption{Key metrics extracted from GP predictions}
+\end{table}
+
+%==============================================================================
+\section{Stage 6: Recommendation Generation}
+%==============================================================================
+
+The extracted metrics are converted to actionable bike fit recommendations using biomechanical heuristics.
+
+\subsection{Saddle Height}
+
+Based on maximum knee extension angle:
+
+\begin{itemize}
+    \item \textbf{Target Range}: $140° - 150°$
+    \item \textbf{If $\theta < 140°$}: Saddle too low. Raise by $(\theta_{\text{target}} - \theta) \times 2$ mm
+    \item \textbf{If $\theta > 150°$}: Saddle too high (overextension risk). Lower by $(\theta - \theta_{\text{target}}) \times 2$ mm
+\end{itemize}
+
+The $2$ mm/degree rule is a common bike fitting heuristic.
+
+\subsection{Saddle Fore/Aft Position}
+
+Based on minimum knee flexion angle:
+
+\begin{itemize}
+    \item \textbf{Target}: $> 70°$
+    \item \textbf{If $\theta < 70°$}: Knee too closed at top of stroke. Move saddle backward 5-10 mm
+\end{itemize}
+
+\subsection{Crank Length}
+
+Based on hip and knee clearance at top of stroke:
+
+\begin{itemize}
+    \item \textbf{Target}: Hip $> 48°$ AND Knee $> 68°$
+    \item \textbf{If impingement detected}: Consider shorter cranks (-5 mm)
+\end{itemize}
+
+Shorter cranks open the hip angle and reduce knee flexion at the top of the stroke.
+
+\subsection{Stem/Reach}
+
+Based on average elbow angle:
+
+\begin{itemize}
+    \item \textbf{Target Range}: $150° - 160°$
+    \item \textbf{If $\theta > 160°$}: Arms too straight. Shorten stem by $\max(10, \frac{\theta - 160}{5} \times 10)$ mm
+    \item \textbf{If $\theta < 150°$}: Arms too bent. Lengthen stem by $\max(10, \frac{150 - \theta}{5} \times 10)$ mm
+\end{itemize}
+
+\subsection{Output Format}
+
+Recommendations are returned as a structured JSON object:
+
+\begin{lstlisting}[language=Python]
+{
+    "saddle_height": {
+        "status": "low",
+        "action": "raise",
+        "adjustment_mm": 15,
+        "details": "Knee ext 135 deg below optimal. Raise ~15mm."
+    },
+    "saddle_fore_aft": { ... },
+    "crank_length": { ... },
+    "cockpit": { ... },
+    "summary": ["Raise saddle ~15mm", ...],
+    "metrics": {
+        "knee_max_extension": 135.2,
+        "knee_min_flexion": 72.5,
+        "min_hip_angle": 52.3,
+        "avg_elbow_angle": 158.1
+    }
+}
+\end{lstlisting}
+
+%==============================================================================
+\section{Performance Characteristics}
+%==============================================================================
+
+\subsection{Timing}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lr}
+\toprule
+Stage & Typical Duration \\
+\midrule
+Video Upload (10MB) & 2-5 s \\
+Model Loading (cached) & 1-2 s \\
+Frame Scanning (1000 frames) & 5-10 s \\
+Active Learning (30 samples) & 3-5 s \\
+GP Prediction & $<$ 1 s \\
+Recommendation Generation & $<$ 0.1 s \\
+\midrule
+\textbf{Total} & \textbf{15-30 s} \\
+\bottomrule
+\end{tabular}
+\caption{Typical processing times on NVIDIA T4 GPU}
+\end{table}
+
+\subsection{Efficiency}
+
+The active learning approach provides significant efficiency gains:
+
+\begin{itemize}
+    \item \textbf{Traditional approach}: Process all frames (potentially 1000+)
+    \item \textbf{Our approach}: Process only $\sim$30 strategically selected frames
+    \item \textbf{Speedup}: $\sim$30x reduction in pose detection calls
+\end{itemize}
+
+%==============================================================================
+\section{Error Handling}
+%==============================================================================
+
+\subsection{Insufficient Valid Frames}
+
+If fewer than 10 valid side-view frames are found:
+
+\begin{lstlisting}
+{"stats": {"frames_processed": 0, "error": "Not enough side-view frames"}}
+\end{lstlisting}
+
+\textbf{Causes}: Video not from side view, no bicycle visible, poor lighting.
+
+\subsection{Pose Detection Failures}
+
+If pose detection fails on a selected frame:
+\begin{itemize}
+    \item Frame is added to ``wasted'' set
+    \item Spatial suppression prevents nearby re-sampling
+    \item GP continues with remaining observations
+\end{itemize}
+
+\subsection{Insufficient Samples}
+
+If fewer than 10 successful pose detections are obtained, recommendations may be unreliable. The system proceeds but confidence is reduced.
+
+%==============================================================================
+\section{Technology Stack}
+%==============================================================================
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ll}
+\toprule
+Component & Technology \\
+\midrule
+Frontend & Next.js 15, React, TypeScript, Tailwind CSS \\
+Backend & Modal (serverless), Python 3.11, FastAPI \\
+GPU & NVIDIA T4 (16GB) \\
+Bike Segmentation & YOLOv8n-seg \\
+Bike Angle Prediction & ConvNeXt-Tiny (custom trained) \\
+Pose Detection & YOLOv8m-pose \\
+Gaussian Processes & BoTorch, GPyTorch \\
+\bottomrule
+\end{tabular}
+\caption{Technology stack}
+\end{table}
+
+%==============================================================================
+\section{Conclusion}
+%==============================================================================
+
+The BikeFit AI data pipeline combines modern deep learning with classical Bayesian optimisation to efficiently analyse cycling videos. Key innovations include:
+
+\begin{enumerate}
+    \item \textbf{Intelligent Frame Selection}: Using Gaussian Process-based active learning to sample only the most informative frames
+    \item \textbf{Multi-Stage Filtering}: Bike detection, angle validation, and pose confidence thresholds ensure robust analysis
+    \item \textbf{Biomechanical Heuristics}: Converting raw joint angles to actionable adjustment recommendations
+\end{enumerate}
+
+The result is a system that can provide professional-level bike fit recommendations in under 30 seconds from a simple phone video.
+
+\end{document}
+

@@ -667,7 +667,7 @@ class VideoProcessor:
             # Gating: only side-view frames (60-120 degrees)
             if 60 <= abs(yaw) <= 120:
                 physical_time = frame_num / fps
-                valid_frames.append({"idx": frame_num, "time": physical_time, "frame": frame})
+                valid_frames.append({"idx": frame_num, "time": physical_time, "frame": frame, "yaw": yaw})
             
             if progress_callback and i % 10 == 0:
                 progress_callback(20 + int((i / frames_to_scan) * 40), "Scanning video...")
@@ -742,7 +742,7 @@ class VideoProcessor:
         return {"stats": stats}
     
     def _process_sample(self, frame_info, idx, exp_knee, exp_hip, exp_elbow, fit):
-        """Process a single frame and update GP experiments."""
+        """Process a single frame and update GP experiments with perspective correction."""
         self.pose_detector.reset_smoother()
         pose = self.pose_detector.detect(frame_info["frame"])
         angles = pose.get("angles", {})
@@ -750,6 +750,21 @@ class VideoProcessor:
         k = angles.get("knee_angle", np.nan)
         h = angles.get("hip_angle", np.nan)
         e = angles.get("elbow_angle", np.nan)
+        
+        # Apply perspective correction based on bike yaw angle
+        # Correction factor = 1 / cos(deviation from 90 degrees)
+        yaw = frame_info.get("yaw", 90)
+        deviation_deg = abs(abs(yaw) - 90)  # How far from perfect side-view
+        deviation_rad = np.radians(deviation_deg)
+        correction_factor = 1.0 / np.cos(deviation_rad) if deviation_deg < 30 else 1.0
+        
+        # Apply correction to measured angles
+        if not np.isnan(k):
+            k = k * correction_factor
+        if not np.isnan(h):
+            h = h * correction_factor
+        if not np.isnan(e):
+            e = e * correction_factor
         
         exp_knee.add_observation(idx, k, fit=fit)
         exp_hip.add_observation(idx, h, fit=fit)
