@@ -1,0 +1,46 @@
+
+% Explain the training and testing results with graphs and elaborating on why they make sense, what could be improved.
+\FloatBarrier
+\subsection{Training and Testing Results}
+\label{subsec:results}
+
+
+\begin{figure}[H]
+    \centering
+    
+    \begin{subfigure}[c]{0.38\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{Chapters/experiment/IMG_3803_frame_000486.jpg}
+        \caption{Sample validation frame}
+        \label{fig:validation-frame}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[c]{0.58\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{Chapters/experiment/validation_line_graph.png}
+        \caption{True vs predicted angle. The dip is due to wrap around.}
+        \label{fig:validation-graph}
+    \end{subfigure}
+
+    \caption{Bike angle prediction validation on unseen video data.}
+    \label{fig:validation-results}
+\end{figure}
+
+\FloatBarrier
+
+\begin{table}[H]
+    \centering
+    \caption{Validation metrics}
+    \label{tab:validation-metrics}
+    \begin{tabular}{lcc}
+        \toprule
+        \textbf{Metric} & \textbf{Raw} & \textbf{Smoothed (30 frame window)} \\
+        \midrule
+        Mean Absolute Error & 10.67° & 8.87° \\
+        Median Absolute Error & 8.60° & 8.26° \\
+        90th Percentile Error & 23.09° & 17.15° \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsubsection{Crankshaft Identification Method}

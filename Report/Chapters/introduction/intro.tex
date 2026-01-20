@@ -1,0 +1,8 @@
+
+\subsection{Introduction to the Problem}
+\label{subsec:intro}
+
+Competitive cyclists often rely on professional bike fitting tools to improve performance and comfort. However, for everyday commuters, or even for amateur level competitive cyclists, these services are typically expensive and inconvenient, creating a high barrier to entry. Cheaper methods, such as the Hamley method or Holmes method of bike fitting provide useful heuristics such as inseam length and max knee flexion to set saddle heights\cite{peveler2011effects}, but these may result in suboptimal adjustments. A poorly fitted bike may result in overuse injuries or reduced economy \cite{peveler2008effects}.
+
+In this project, we propose a machine-learning pipeline that takes a short video of a rider cycling and outputs recommendations to improve their bike fit and posture. A key challenge is that, in realistic recordings, the rider is not guaranteed to be perfectly perpendicular to the camera. Standard 2D pose estimation methods therefore produce joint angles that are distorted by perspective. To address this, we introduce a pipeline that estimates the bicycle's yaw angle relative to the camera using a custom angle-prediction model, and then uses this estimate to account for perspective effects when interpreting 2D joint angles.
+

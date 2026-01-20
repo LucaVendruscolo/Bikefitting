@@ -26,13 +26,11 @@ export interface Recommendation {
 export interface Recommendations {
   saddle_height: Recommendation
   saddle_fore_aft: Recommendation
-  crank_length: Recommendation
   cockpit: Recommendation
   summary: string[]
   metrics: {
     knee_max_extension: number | null
     knee_min_flexion: number | null
-    min_hip_angle: number | null
     avg_elbow_angle: number | null
   }
 }
@@ -191,7 +189,7 @@ export default function ResultsViewer({ result, onReset }: ResultsViewerProps) {
 }
 
 function RecommendationsPanel({ recommendations }: { recommendations: Recommendations }) {
-  const { metrics, summary, saddle_height, saddle_fore_aft, crank_length, cockpit } = recommendations
+  const { metrics, summary, saddle_height, saddle_fore_aft, cockpit } = recommendations
   
   return (
     <div className="glass rounded-2xl p-6 border border-surface-700">
@@ -222,7 +220,7 @@ function RecommendationsPanel({ recommendations }: { recommendations: Recommenda
       )}
 
       {/* Detailed Metrics */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-3 gap-4 mb-6">
         <MetricCard 
           label="Max Knee Extension" 
           value={metrics.knee_max_extension} 
@@ -238,13 +236,6 @@ function RecommendationsPanel({ recommendations }: { recommendations: Recommenda
           status={metrics.knee_min_flexion && metrics.knee_min_flexion >= 70 ? 'ok' : 'warning'}
         />
         <MetricCard 
-          label="Min Hip Angle" 
-          value={metrics.min_hip_angle} 
-          unit="°"
-          target=">48°"
-          status={metrics.min_hip_angle && metrics.min_hip_angle >= 48 ? 'ok' : 'warning'}
-        />
-        <MetricCard 
           label="Avg Elbow Angle" 
           value={metrics.avg_elbow_angle} 
           unit="°"
@@ -254,7 +245,7 @@ function RecommendationsPanel({ recommendations }: { recommendations: Recommenda
       </div>
 
       {/* Adjustment Details */}
-      <div className="grid md:grid-cols-2 gap-4">
+      <div className="grid md:grid-cols-3 gap-4">
         <AdjustmentCard
           title="Saddle Height"
           recommendation={saddle_height}
@@ -273,12 +264,6 @@ function RecommendationsPanel({ recommendations }: { recommendations: Recommenda
           recommendation={cockpit}
           icon={cockpit.reach_action === 'shorten' ? <ArrowLeft className="w-4 h-4" /> : 
                 cockpit.reach_action === 'lengthen' ? <ArrowRight className="w-4 h-4" /> : 
-                <Check className="w-4 h-4" />}
-        />
-        <AdjustmentCard
-          title="Crank Length"
-          recommendation={crank_length}
-          icon={crank_length.action === 'consider_shorter' ? <AlertTriangle className="w-4 h-4" /> : 
                 <Check className="w-4 h-4" />}
         />
       </div>

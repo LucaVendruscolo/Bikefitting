@@ -1,0 +1,150 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% NeurIPS 2023 Paper
+%% Machine Learning and the Physical World - Course Project
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\documentclass{article}
+
+% NeurIPS 2023 style (use [final] for camera-ready, [preprint] for arXiv)
+\usepackage[final]{neurips_2023}
+\makeatletter
+\renewcommand{\And}{\end{tabular}\hfil\linebreak[0]\hfil\begin{tabular}[t]{c}}
+\makeatother
+% Core packages
+\usepackage[numbers]{natbib}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{url}
+
+% Math packages
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage{bm}
+\usepackage{dsfont}
+
+% Tables and figures
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{subcaption}
+\usepackage{adjustbox}
+\usepackage{placeins}
+
+% TikZ for diagrams
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Paper metadata
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\title{Bicycle Fitting From Pose Interpolation}
+
+\author{%
+  {\normalfont Luca Vendruscolo} \\
+  University of Cambridge \\
+  \texttt{lv373@cam.ac.uk}
+  \And
+  {\normalfont Kyle Fram} \\
+  University of Cambridge \\
+  \texttt{kdf25@cam.ac.uk}
+  \And
+  {\normalfont Fivos Papathanasiou} \\
+  University of Cambridge \\
+  \texttt{fp394@cam.ac.uk}
+}
+
+
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Document
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\begin{document}
+
+\maketitle
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Abstract
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\begin{abstract}
+Professional bike fitting services are expensive and inconvenient, creating barriers for everyday cyclists. We propose a machine-learning pipeline that takes a short video of a rider cycling and outputs recommendations to improve their bike fit and posture. A key challenge is that, in realistic recordings, the rider is not guaranteed to be perfectly perpendicular to the camera. Standard 2D pose estimation methods therefore produce joint angles that are distorted by perspective. To address this, we introduce a pipeline that estimates the bicycle's yaw angle relative to the camera using a custom angle-prediction model, and then uses this estimate to account for perspective effects when interpreting 2D joint angles. Our approach provides near real-time feedback from any camera-enabled device with reasonable computational overhead.
+\end{abstract}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Introduction
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section{Introduction and Motivation}
+\label{sec:intro}
+
+\input{Chapters/introduction/intro}
+\input{Chapters/introduction/related_work}
+\input{Chapters/introduction/overview}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Methodology
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section{Methodology}
+\label{sec:methodology}
+
+\input{Chapters/methodology/baseline_algo}
+\input{Chapters/methodology/algo_improvements}
+\input{Chapters/methodology/data_pipeline}
+\input{Chapters/methodology/procedure}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Experiments
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section{Experiments and Evaluation}
+\label{sec:experiment}
+
+\input{Chapters/experiment/dataset}
+\input{Chapters/experiment/experiment}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Conclusion
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section{Conclusions and Future Directions}
+\label{sec:conclusion}
+
+\input{Chapters/conclusion/conclusions}
+\input{Chapters/conclusion/limitations}
+\input{Chapters/conclusion/future}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Acknowledgments (optional, only visible in final version)
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% \begin{ack}
+% We thank...
+% \end{ack}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% References
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\bibliographystyle{plainnat}
+\bibliography{thesis}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Appendix
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\appendix
+
+\section{Additional Figures}
+\label{appendix:figures}
+\input{Chapters/appendix/figures}
+
+\section{Contributions}
+\label{appendix:contribution}
+\input{Chapters/appendix/contribution}
+
+\end{document}

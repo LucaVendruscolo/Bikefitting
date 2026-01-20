@@ -1,0 +1,83 @@
+% Explain your data format, how you consume the data in your algorithms, and data augmentation.
+
+\subsection{Data Pipelines}
+\label{subsec:data_pipeline}
+
+\subsubsection{Bike Angle Detection Model}
+The purpose of the bike angle model is to estimate the bicycle's yaw angle $\theta \in [-180^{\circ}, 180^{\circ})$ relative to the camera. This allows the system to handle videos where the rider is not perfectly side-on.
+
+We use a two-stage pipeline:
+\begin{enumerate}
+    \item \textbf{Bike segmentation:} We first isolate bicycle pixels in each frame using a YOLOv8 instance segmentation model. The resulting binary mask $M \in \{0,1\}^{H \times W}$ reduces background clutter and makes the angle estimator less sensitive to background noise.
+    \item \textbf{Angle prediction:} The masked bicycle crop is resized to a fixed resolution ($224 \times 224$) and passed to a classifier (ConvNeXt backbone with a small MLP head) that outputs logits $\mathbf{z} \in \mathbb{R}^{K}$ over $K$ discretised angle bins. Applying a softmax produces a probability distribution over angles:
+    \begin{equation}
+        p_i = \frac{\exp(z_i)}{\sum_{j=1}^{K} \exp(z_j)}, \quad i = 1, \ldots, K
+    \end{equation}
+    where each bin $i$ corresponds to angle $\theta_i = -180^{\circ} + (i - 0.5) \cdot \frac{360^{\circ}}{K}$.
+\end{enumerate}
+
+\paragraph{Circular Soft Labels}
+Because yaw is circular (i.e., $-180^{\circ} \equiv +180^{\circ}$), we train the classifier using circularly consistent soft labels. For a ground truth angle $\theta^*$, we first compute the circular distance to each bin centre:
+\begin{equation}
+    d_{\text{circ}}(\theta^*, \theta_i) = \min\left( |\theta^* - \theta_i|, \; 360^{\circ} - |\theta^* - \theta_i| \right)
+\end{equation}
+
+We then construct a Gaussian like target distribution over bins:
+\begin{equation}
+    \tilde{y}_i = \exp\left( -\frac{d_{\text{circ}}(\theta^*, \theta_i)^2}{2\sigma^2} \right)
+\end{equation}
+where $\sigma$ controls the label smoothness. The soft labels are normalised to form a valid probability distribution:
+\begin{equation}
+    y_i = \frac{\tilde{y}_i}{\sum_{j=1}^{K} \tilde{y}_j}
+\end{equation}
+
+This formulation ensures that bins near $-180^{\circ}$ and $+180^{\circ}$ are treated as neighbours, preventing loss of accuracy at the angle warp around boundary.
+
+\paragraph{Circular Mean Inference}
+At inference time, rather than taking the argmax bin we convert the predicted distribution to a single angle using a circular mean. Each bin probability $p_i$ is mapped to a unit vector on the circle, and the mean direction is computed via:
+\begin{equation}
+    \bar{\theta} = \text{atan2}\left( \sum_{i=1}^{K} p_i \sin(\theta_i), \; \sum_{i=1}^{K} p_i \cos(\theta_i) \right)
+\end{equation}
+
+This approach correctly handles distributions that span the $\pm 180^{\circ}$ boundary. 
+
+\begin{figure}[h]
+    \centering
+    \begin{minipage}[t]{0.49\linewidth}
+        \vspace{0pt}
+        \centering
+        \begin{minipage}[c][6cm][c]{\linewidth}
+            \centering
+            \includegraphics[width=\linewidth,height=6cm,keepaspectratio]{Chapters/methodology/figure_example_frames.png}
+        \end{minipage}
+        \caption{Example frames from the training videos with predicted angles. Top row: original frames at various view angles. Bottom row: segmented bicycle crops (224$\times$224) used as model input.}
+        \label{fig:example_frames}
+    \end{minipage}
+    \hfill
+    \begin{minipage}[t]{0.49\linewidth}
+        \vspace{0pt}
+        \centering
+        \begin{minipage}[c][6cm][c]{\linewidth}
+            \centering
+            \includegraphics[width=\linewidth,height=6cm,keepaspectratio]{Chapters/methodology/figure_distributions.png}
+        \end{minipage}
+        \caption{Probability distributions output by the ConvNeXt classifier for the three example frames in \ref{fig:example_frames}. The vertical line indicates the predicted angle $\bar{\theta}$. These examples are obtained by applying the trained model to training-set frames.}
+        \label{fig:distributions}
+    \end{minipage}
+\end{figure}
+
+
+
+\begin{figure}
+    \centering
+    \includegraphics[width=1\linewidth]{Chapters/methodology/BikeAngleVideo.png}
+    \caption{Screenshot from a video showing the bike and joint angle detection. View full video here: https://shorturl.at/DRwKY}
+    \label{fig:BikeAngleVideo}
+\end{figure}
+
+
+
+%\subsection{Crank Angle Detection Model}
+%The Crank Angle Detection model determines where the rider's lower limbs are in the drive sequence. One shortcoming of YOLOv8 is the lack of 'toe' keypoint and thus we cannot compute an accurate ankle flexion angle from our model, but so long as we verify that maximum knee flexion occurs coincidentally with the extremes of the drive cycle, we can rely upon known heuristics to adjust saddle height\cite{bini2011effects}. 
+
+%This model relies upon the same foundations as that above, but recognizes the additional challenge of estimating the location of far joints (namely, ankles blocked by other body or frame members). This leverages the 'confidence' score of YOLOv8, the model's quantification of uncertainty, to filter out poor estimates. To fill in the values of these unknown locations, we use a Gaussian Process with 

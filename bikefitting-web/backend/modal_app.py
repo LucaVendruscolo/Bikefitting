@@ -551,19 +551,16 @@ def generate_recommendations(results):
     """Generate bike fit recommendations from GP-predicted metrics."""
     k_max = results.get("max_knee_ext", 0)
     k_min = results.get("min_knee_flex", 70)
-    h_min = results.get("min_hip_angle", 60)
     e_avg = results.get("avg_elbow_angle", 155)
     
     rec = {
         "saddle_height": {"status": "ok", "action": None, "adjustment_mm": 0, "details": ""},
         "saddle_fore_aft": {"status": "ok", "action": None, "adjustment_mm": 0, "details": ""},
-        "crank_length": {"status": "ok", "action": None, "details": ""},
         "cockpit": {"status": "ok", "reach_action": None, "adjustment_mm": 0, "details": ""},
         "summary": [],
         "metrics": {
             "knee_max_extension": round(k_max, 1) if k_max else None,
             "knee_min_flexion": round(k_min, 1) if k_min else None,
-            "min_hip_angle": round(h_min, 1) if h_min else None,
             "avg_elbow_angle": round(e_avg, 1) if e_avg else None
         }
     }
@@ -587,19 +584,15 @@ def generate_recommendations(results):
         rec["saddle_height"]["details"] = f"Knee ext {k_max:.0f}° is optimal."
         rec["summary"].append("Saddle height optimal")
     
-    # Saddle Fore/Aft
+    # Saddle Fore/Aft (target: knee flexion >70 at top of stroke)
     if k_min < 70:
         rec["saddle_fore_aft"] = {"status": "forward", "action": "move_back", "adjustment_mm": 10,
                                   "details": f"Knee closed at top ({k_min:.0f}°). Move back 5-10mm."}
         rec["summary"].append("Move saddle back 5-10mm")
+    else:
+        rec["saddle_fore_aft"]["details"] = f"Knee clearance at top ({k_min:.0f}°) is good."
     
-    # Crank Length
-    if h_min < 48 or k_min < 68:
-        rec["crank_length"] = {"status": "issue", "action": "consider_shorter",
-                               "details": f"Hip {h_min:.0f}° indicates impingement. Consider shorter cranks."}
-        rec["summary"].append("Consider shorter cranks")
-    
-    # Cockpit
+    # Cockpit / Stem (target: elbow 150-165 deg)
     if e_avg > 165:
         mm = max(10, ((e_avg - 160) / 5) * 10)
         rec["cockpit"] = {"status": "issue", "reach_action": "shorten", "adjustment_mm": round(mm),
@@ -610,6 +603,8 @@ def generate_recommendations(results):
         rec["cockpit"] = {"status": "issue", "reach_action": "lengthen", "adjustment_mm": round(mm),
                           "details": f"Arms bent ({e_avg:.0f}°). Lengthen stem ~{mm:.0f}mm."}
         rec["summary"].append(f"Lengthen stem ~{mm:.0f}mm")
+    else:
+        rec["cockpit"]["details"] = f"Elbow angle ({e_avg:.0f}°) is in optimal range."
     
     return rec
 
@@ -728,7 +723,6 @@ class VideoProcessor:
         results = {
             "max_knee_ext": float(np.max(pred_knee)) if pred_knee is not None else 0,
             "min_knee_flex": float(np.min(pred_knee)) if pred_knee is not None else 70,
-            "min_hip_angle": float(np.min(pred_hip)) if pred_hip is not None else 60,
             "avg_elbow_angle": float(np.mean(pred_elbow)) if pred_elbow is not None else 155
         }
         
@@ -763,7 +757,6 @@ class VideoProcessor:
             "valid_frames": len(valid_frames),
             "knee_max_extension": results["max_knee_ext"],
             "knee_min_flexion": results["min_knee_flex"],
-            "min_hip_angle": results["min_hip_angle"],
             "avg_elbow_angle": results["avg_elbow_angle"],
             "recommendations": recommendations,
             "method": "Gaussian Process Active Learning"
