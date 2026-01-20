@@ -112,7 +112,7 @@ export default function VideoUploader({
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
-      let finalResult: { stats?: Record<string, unknown> } | null = null
+      let finalStats: ProcessingResult['stats'] | null = null
 
       const processLine = (line: string) => {
         if (!line.startsWith('data: ')) return
@@ -124,7 +124,7 @@ export default function VideoUploader({
             onProcessingProgress(data.percent)
           }
           if (data.type === 'complete') {
-            finalResult = data
+            finalStats = data.stats as ProcessingResult['stats']
           }
         } catch (e) {
           if (e instanceof Error && e.message !== 'No result received') throw e
@@ -141,11 +141,9 @@ export default function VideoUploader({
       }
       if (buffer.trim()) processLine(buffer)
 
-      if (!finalResult) throw new Error('No result received')
+      if (!finalStats) throw new Error('No result received')
 
-      onComplete({
-        stats: (finalResult.stats as ProcessingResult['stats']) || { frames_processed: 0 },
-      })
+      onComplete({ stats: finalStats })
     } catch (err) {
       onError(err instanceof Error ? err.message : 'Analysis failed')
     }
