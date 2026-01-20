@@ -607,15 +607,15 @@ def generate_recommendations(results):
         rec["crank_length"]["details"] = f"Hip clearance ({h_min:.0f}°) is adequate. No impingement."
     
     # 4. Cockpit / Stem (target: elbow 150-160 deg)
-    if e_avg > 165:
+    if e_avg > 160:
         mm = max(10, ((e_avg - 160) / 5) * 10)
         rec["cockpit"] = {"status": "issue", "reach_action": "shorten", "adjustment_mm": round(mm),
-                          "details": f"Arms locked ({e_avg:.0f}°). Shorten stem ~{mm:.0f}mm."}
+                          "details": f"Arms too straight ({e_avg:.0f}°). Shorten stem ~{mm:.0f}mm."}
         rec["summary"].append(f"Shorten stem ~{mm:.0f}mm")
     elif e_avg < 150:
         mm = max(10, ((150 - e_avg) / 5) * 10)
         rec["cockpit"] = {"status": "issue", "reach_action": "lengthen", "adjustment_mm": round(mm),
-                          "details": f"Arms bent ({e_avg:.0f}°). Lengthen stem ~{mm:.0f}mm."}
+                          "details": f"Arms too bent ({e_avg:.0f}°). Lengthen stem ~{mm:.0f}mm."}
         rec["summary"].append(f"Lengthen stem ~{mm:.0f}mm")
     else:
         rec["cockpit"]["details"] = f"Elbow angle ({e_avg:.0f}°) is in optimal range (150-160°)."

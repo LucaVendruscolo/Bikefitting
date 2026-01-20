@@ -343,8 +343,8 @@ function getKneeStatus(value: number | null): 'ok' | 'warning' | 'error' {
 
 function getElbowStatus(value: number | null): 'ok' | 'warning' | 'error' {
   if (!value) return 'warning'
-  if (value >= 150 && value <= 165) return 'ok'
-  if (value >= 145 && value <= 170) return 'warning'
+  if (value >= 150 && value <= 160) return 'ok'
+  if (value >= 145 && value <= 165) return 'warning'
   return 'error'
 }
 
