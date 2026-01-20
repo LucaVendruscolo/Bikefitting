@@ -11,7 +11,7 @@ from tqdm import tqdm
 from .bike_segmenter import BikeSegmenter
 from .angle_predictor import BikeAnglePredictor
 from .pose_detector import PoseDetector
-from .kinematics import fit_sine_wave
+from .kinematics import estimate_pedal_stroke_stats, fit_sine_wave
 
 
 def draw_angle_indicator(img: np.ndarray, angle: float, label: str, 
@@ -115,6 +115,7 @@ class VideoProcessor:
         self,
         input_path: str,
         output_path: str,
+        csv_path: Optional[str] = None,
         output_fps: int = 10,
         max_duration_sec: Optional[float] = None,
         start_time: float = 0,
@@ -190,13 +191,14 @@ class VideoProcessor:
         
         # Processing stats
         bike_angles = []
-        joint_angle_history = {"knee": [], "hip": [], "elbow": []}
         frames_with_bike = 0
         frames_with_pose = 0
 
         # Store timestamps and knee angles for sine wave fitting
         timestamps = []
         raw_knee_angles = []
+        raw_hip_angles = []
+        raw_elbow_angles = []
         
         for i in tqdm(range(frames_to_process), desc="Processing"):
             frame_num = start_frame + (i * frame_skip)
@@ -231,20 +233,26 @@ class VideoProcessor:
             physical_time = frame_num / video_fps
             timestamps.append(physical_time)
 
-            # Only append the knee angle if we are in a valid side view
+            # Only append the joint angle if we are in a valid side view
+            
+            # Knee
             if is_side_view and 'knee_angle' in joint_angles:
                 raw_knee_angles.append(joint_angles['knee_angle'])
             else:
                 # Append NaN so the curve fitter ignores this frame
                 raw_knee_angles.append(float("nan"))
 
-            
-            if detected_side:
-                frames_with_pose += 1
-                for key in ["knee", "hip", "elbow"]:
-                    angle_key = f"{key}_angle"
-                    if angle_key in joint_angles:
-                        joint_angle_history[key].append(joint_angles[angle_key])
+            # Hip
+            if is_side_view and 'hip_angle' in joint_angles:
+                raw_hip_angles.append(joint_angles['hip_angle'])
+            else:
+                raw_hip_angles.append(float("nan"))
+
+            # Elbow
+            if is_side_view and 'elbow_angle' in joint_angles:
+                raw_elbow_angles.append(joint_angles['elbow_angle'])
+            else:
+                raw_elbow_angles.append(float("nan"))
             
             
             # Create output frame
@@ -319,7 +327,23 @@ class VideoProcessor:
         
         cap.release()
         out.release()
+
+        # Calculate "ground truth" angles for benchmarking of BO
+        import csv
+        if csv_path:
+            print(f"Exporting angle data to {csv_path}...")
+            try:
+                import csv
+                with open(csv_path, mode='w', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(['time', 'knee_angle', 'hip_angle', 'elbow_angle'])
+                    for t, k, h, e in zip(timestamps, raw_knee_angles, raw_hip_angles, raw_elbow_angles):
+                        writer.writerow([t, k, h, e])
+                print("Export successful.")
+            except Exception as e:
+                print(f"Failed to export CSV: {e}")
         
+
         # Compute stats
         stats = {
             "frames_processed": frames_to_process,
@@ -332,21 +356,65 @@ class VideoProcessor:
         if bike_angles:
             stats["avg_bike_angle"] = float(np.mean(bike_angles))
             stats["bike_angle_std"] = float(np.std(bike_angles))
-        
-        for key in ["knee", "hip", "elbow"]:
-            if joint_angle_history[key]:
-                stats[f"avg_{key}_angle"] = float(np.mean(joint_angle_history[key]))
 
-        # Fit sine wave to knee angles to get max extension and cadence
-        knee_fit = fit_sine_wave(timestamps, raw_knee_angles)
-        if knee_fit and knee_fit["r_squared"] > 0.5:
-            stats["knee_max_extension"] = knee_fit["max_extension"]
-            stats["knee_min_flexion"] = knee_fit["min_flexion"]
-            stats["cadence"] = knee_fit["cadence_rpm"]
-            print(f"Robust Fit: Knee Max={knee_fit['max_extension']:.1f}°, Cadence={knee_fit['cadence_rpm']:.0f}rpm")
+        # A. KNEE ANALYSIS
+        knee_stats = estimate_pedal_stroke_stats(
+            timestamps, raw_knee_angles, 
+            peak_height_limit=100,  # Extension must be > 100
+            valley_height_limit=120, # Flexion must be < 120
+            prominence=30           # Since ROM of knee is at least > 30 we avoid shallow noise waves
+        )
+        
+        if knee_stats and knee_stats["count_peaks"] >= 3:
+            stats["knee_max_extension"] = knee_stats["max_angle"]
+            stats["knee_min_flexion"] = knee_stats["min_angle"]
+            stats["cadence"] = knee_stats["cadence_rpm"]
+            print(f"Knee: Max={knee_stats['max_angle']:.1f}°, Min={knee_stats['min_angle']:.1f}°")
         else:
             stats["knee_max_extension"] = np.nanpercentile(raw_knee_angles, 95)
-            print("Curve fit failed, using percentile fallback.")
+            stats["knee_min_flexion"] = np.nanpercentile(raw_knee_angles, 5)
+            print("Knee: Using percentile fallback.")
+
+        # B. HIP ANALYSIS
+        hip_stats = estimate_pedal_stroke_stats(
+            timestamps, raw_hip_angles,
+            peak_height_limit=60,   # Hip extension > 60
+            valley_height_limit=100, # Hip closed < 100
+            prominence=20            # Since ROM of hip is at least > 20 we avoid shallow noise waves
+        )
+        
+        if hip_stats and hip_stats["count_valleys"] >= 3:
+            stats["min_hip_angle"] = hip_stats["min_angle"]
+            stats["max_hip_angle"] = hip_stats["max_angle"]
+            print(f"Hip: Min={hip_stats['min_angle']:.1f}° (Impingement Check)")
+        else:
+            stats["min_hip_angle"] = np.nanpercentile(raw_hip_angles, 5)
+            stats["max_hip_angle"] = np.nanpercentile(raw_hip_angles, 95)
+
+        # C. ELBOW ANALYSIS
+        # We calculate both to see if outliers are skewing the data
+        if not np.all(np.isnan(raw_elbow_angles)):
+            # 1. Median (Robust - Recommended)
+            elbow_median = float(np.nanmedian(raw_elbow_angles))
+            stats["elbow_angle_median"] = elbow_median
+            
+            # 2. Mean (Standard Average - Sensitive to noise)
+            elbow_mean = float(np.nanmean(raw_elbow_angles))
+            stats["elbow_angle_mean"] = elbow_mean
+            
+            # Print comparison
+            print(f"Elbow Analysis: Median={elbow_median:.1f}°, Mean={elbow_mean:.1f}°")
+            
+            # Optional: Warning if they diverge significantly (> 5 degrees)
+            if abs(elbow_median - elbow_mean) > 5.0:
+                print("  [WARNING] Large divergence in Elbow metrics! Data might be noisy.")
+        
+        # D. SIMPLE AVERAGES
+        if not np.all(np.isnan(raw_knee_angles)):
+            stats["avg_knee_angle"] = float(np.nanmean(raw_knee_angles))
+        if not np.all(np.isnan(raw_hip_angles)):
+            stats["avg_hip_angle"] = float(np.nanmean(raw_hip_angles))
+
         
         print(f"\nProcessing complete!")
         print(f"Output saved to: {output_path}")
