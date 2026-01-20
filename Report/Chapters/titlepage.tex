@@ -1,0 +1,57 @@
+%% Title page, abstract, declaration etc.:
+%% -    the title page (is automatically omitted in the technical report mode).
+% \frontmatter{}
+\begin{titlepage}
+
+    % 1. The Logo
+    \begin{flushleft}
+        \includegraphics[width=6cm]{CST.jpg} 
+    \end{flushleft}
+
+    % Vertical spacing to push the next text down
+    \vspace{3cm}
+
+    % 2. The Right-Aligned Course Name
+    \begin{flushright}
+        \color{darkgray}
+        \textbf{
+        \fontsize{20}{24}\selectfont % Custom large font size
+        Machine Learning and the Physical World\\[0.2cm] % The \\[0.2cm] adds a little space between lines
+        \Large Course Project Report}
+    \end{flushright}
+
+    % Vertical spacing
+    \vspace{2.5cm}
+
+    \begin{flushleft}
+        \fontsize{24}{20}\selectfont
+        {Bycicle Fitting From Pose Interpolation}
+        % {Generative 3D Reconstruction of Sparse 2D Views Using Gaussian Splatting}
+    \end{flushleft}
+
+    % Vertical spacing
+    \vspace{1cm}
+
+    % 4. Author and Group Info
+    \begin{flushleft}
+        \color{black}
+        \normalsize
+        \textbf{Authors:}\\
+        Kyle Fram - kdf25\\
+        Fivos Papathanasiou \\ 
+        Luca Vendruscolo  \\
+        [0.5cm]        
+        \textbf{Group number:} [X]
+    \end{flushleft}
+
+    % Fill the rest of the page so the title page ends here
+    \vfill
+
+\end{titlepage}
+
+
+\cleardoublepage 
+\thispagestyle{plain} 
+\input{Chapters/Abstract/abstract}
+
+\cleardoublepage

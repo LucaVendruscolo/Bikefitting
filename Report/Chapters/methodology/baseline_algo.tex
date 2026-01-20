@@ -1,0 +1,17 @@
+% Explain the baseline architecture you used to build your algorithm on. You may reproduce figures from the original papers.
+
+\subsection{Baseline Algorithm}
+\label{subsec:baseline_algo}
+
+YOLOv8-pose predicts a 2D human skeleton by estimating joint positions in each frame. From these keypoints, joint angles can be computed using standard vector geometry. A simple baseline therefore processes a video of a rider cycling, computes joint angles frame by frame and summaries each joint's motion using statistics such as the maximum and minimum observed angles.
+
+However, this baseline implicitly assumes that the rider is viewed from a perfectly side on perspective. In practice videos recorded without a bike trainer will not be perpendicular to the camera which introduces perspective distortion in the 2D keypoints. As a result, the angles computed from 2D projections may not reflect the rider's true angles, motivating the need for perspective aware corrections.
+
+A fit may be achieved by considering only maximum and minimum joint flexion of the lower limbs along the drive cycle\cite{peveler2011effects}. However, the bicycle frame often will block the view of YOLO's ankle point at maximum position in the drive cycle, and thus our algorithm attempts to augment blocked measurements by approximating the hidden information by using a gaussian process. 
+
+\subsection{How we obtained the ground-truth bike angle}
+To measure the bicycle’s true yaw angle, we mounted a BNO055 9-axis IMU module directly onto the bike frame. The sensor provides absolute orientation that used an accelerometer, gyroscope and magnetometer readings, allowing it to remain stable over time (i.e., it does not suffer from drift like a gyroscope only estimate) by referencing the Earth’s magnetic field.
+
+During data collection, the IMU was connected via a long cable to a battery-powered Raspberry Pi, which was carried alongside the rider (either held by the rider or secured to the rear of the bicycle). The Raspberry Pi logged timestamped orientation measurements throughout each recording.
+
+To synchronise the sensor log with the video stream, held up a phone with the accurate time to the camera start of each recording. This provided a reference timestamp (to millisecond resolution) that allowed the alignment between video frames and IMU measurements during post-processing.

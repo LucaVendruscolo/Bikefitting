@@ -1,0 +1,12 @@
+
+% \textbf{TODO: Do this section, the paper is kind of complicated in what it does}
+
+% Explain what you implemented to improve over the baseline. You may include figures to explain the idea and logic. Focus on the ideas and not the implementation.
+\subsection{Algorithm Improvements}
+\label{subsec:algo_improvements}
+We considered multiple approaches to reduce perspective induced error in joint-angle estimates. One option was to use \textit{MediaPipe Pose} which outputs body landmarks in both normalized image coordinates and estimated 3D world coordinates. \cite{mediapipe_pose_landmarker}
+In preliminary experiments on side-on cycling videos, we found that these 3D estimates were not sufficiently reliable for our use case, particularly under self-occlusion (e.g., when the side of the body facing away from the camera is partially hidden).
+
+We therefore adopt an alternative strategy: we estimate the bicycle's yaw angle relative to the camera using a custom-trained angle prediction model. This yaw estimate is then used to interpret and filter 2D pose measurements in a way that is more robust to non-perpendicular camera viewpoints.
+
+To approximate the location of hidden ankle joints, we remove data points where YOLOv8 confidence is less than some threshold $t$ and fit a periodic gaussian process to the data. 

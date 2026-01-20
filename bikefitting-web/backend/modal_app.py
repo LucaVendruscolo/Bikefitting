@@ -32,7 +32,7 @@ MAX_OUTPUT_FPS = 15
 RATE_LIMIT_REQUESTS = 10    # Requests per hour per client
 RATE_LIMIT_WINDOW_SEC = 3600
 
-# Container image with ML dependencies
+# Container image with ML dependencies including BoTorch for Bayesian Optimization
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("ffmpeg", "libx264-dev", "libgl1-mesa-glx", "libglib2.0-0")
@@ -40,7 +40,9 @@ image = (
         "torch>=2.0.0", "torchvision>=0.15.0",
         "opencv-python-headless>=4.8.0", "numpy>=1.24.0",
         "ultralytics>=8.0.0", "Pillow>=10.0.0",
-        "tqdm>=4.65.0", "fastapi"
+        "tqdm>=4.65.0", "fastapi",
+        # BoTorch/GPyTorch for Gaussian Process-based Active Learning
+        "botorch>=0.9.0", "gpytorch>=1.11.0", "scikit-learn>=1.3.0"
     )
 )
 
@@ -385,159 +387,373 @@ class PoseDetector:
         conns = SKELETON_RIGHT if detected_side == "right" else SKELETON_LEFT
         side_joints = [f"{detected_side}_{j}" for j in ["shoulder", "elbow", "wrist", "hip", "knee", "ankle"]]
         
+        # Higher confidence threshold - only show if YOLO is confident
+        min_conf = 0.6
+        
         # Draw skeleton lines (yellow with black outline)
         for start_name, end_name in conns:
             si, ei = KPT_IDX[start_name], KPT_IDX[end_name]
-            if kpts_conf[si] < 0.3 or kpts_conf[ei] < 0.3:
+            if kpts_conf[si] < min_conf or kpts_conf[ei] < min_conf:
                 continue
             sp = (int(kpts_xy[si][0] * scale), int(kpts_xy[si][1] * scale))
             ep = (int(kpts_xy[ei][0] * scale), int(kpts_xy[ei][1] * scale))
-            cv2.line(vis, sp, ep, (0, 0, 0), 7)
-            cv2.line(vis, sp, ep, (0, 255, 255), 4)
+            cv2.line(vis, sp, ep, (0, 0, 0), 3)
+            cv2.line(vis, sp, ep, (0, 255, 255), 2)
         
-        # Draw joint circles (magenta with white border)
+        # Draw smaller joint circles (magenta with white border)
         for jn in side_joints:
             idx = KPT_IDX[jn]
-            if kpts_conf[idx] < 0.3:
+            if kpts_conf[idx] < min_conf:
                 continue
             pt = (int(kpts_xy[idx][0] * scale), int(kpts_xy[idx][1] * scale))
-            cv2.circle(vis, pt, 12, (0, 0, 0), -1)
-            cv2.circle(vis, pt, 10, (255, 0, 255), -1)
-            cv2.circle(vis, pt, 10, (255, 255, 255), 2)
+            cv2.circle(vis, pt, 5, (0, 0, 0), -1)
+            cv2.circle(vis, pt, 4, (255, 0, 255), -1)
+            cv2.circle(vis, pt, 4, (255, 255, 255), 1)
         
         return vis
 ''')
     
-    # video_processor.py - Main processing pipeline
+    # video_processor.py - Uses Fivos's SmartBikeFitter with Gaussian Process Active Learning
     (proc_dir / "video_processor.py").write_text('''
 import cv2
 import numpy as np
+import torch
 from tqdm import tqdm
+from sklearn.preprocessing import StandardScaler
+from botorch.models import SingleTaskGP
+from botorch.fit import fit_gpytorch_mll
+from gpytorch.mlls import ExactMarginalLogLikelihood
+from gpytorch.kernels import RBFKernel, MaternKernel, ScaleKernel
+from gpytorch.priors import GammaPrior
+
 from .bike_segmenter import BikeSegmenter
 from .angle_predictor import BikeAnglePredictor
 from .pose_detector import PoseDetector
 
 
+class ALSimExperiment:
+    """
+    Active Learning Experiment using Gaussian Processes.
+    Uses uncertainty-based acquisition to select which frames to sample.
+    """
+    def __init__(self, timestamps, kernel_type="rbf", acq_strategy="joint_uncertainty"):
+        self.timestamps = timestamps
+        self.total_frames = len(timestamps)
+        self.y_values = np.full(self.total_frames, np.nan)
+        self.visited_indices = []
+        self.train_indices = []
+        self.wasted_indices = []
+        self.kernel_type = kernel_type
+        self.acq_strategy = acq_strategy
+        self.model = None
+        self.x_scaler = StandardScaler()
+        self.y_scaler = StandardScaler()
+        self.X_all = torch.tensor(timestamps.reshape(-1, 1), dtype=torch.double)
+        self.X_all_norm = torch.tensor(
+            self.x_scaler.fit_transform(timestamps.reshape(-1, 1)),
+            dtype=torch.double
+        )
+
+    def update_model(self, fit=False):
+        if len(self.train_indices) == 0:
+            return
+        X_train = self.timestamps[self.train_indices].reshape(-1, 1)
+        Y_train = self.y_values[self.train_indices].reshape(-1, 1)
+        X_train_norm = torch.tensor(self.x_scaler.transform(X_train), dtype=torch.double)
+        Y_train_norm = torch.tensor(self.y_scaler.fit_transform(Y_train), dtype=torch.double)
+        time_std = self.x_scaler.scale_[0]
+        
+        old_state_dict = None
+        if self.model is not None and not fit:
+            old_state_dict = {k: v for k, v in self.model.state_dict().items()
+                            if "train_inputs" not in k and "train_targets" not in k}
+        
+        fast_ls_target = 0.40 / time_std
+        fast_ls_prior = GammaPrior(concentration=2.0, rate=2.0/fast_ls_target)
+        
+        if self.kernel_type == "rbf":
+            covar = ScaleKernel(RBFKernel(lengthscale_prior=fast_ls_prior))
+        else:
+            covar = ScaleKernel(MaternKernel(nu=2.5, lengthscale_prior=fast_ls_prior))
+        
+        self.model = SingleTaskGP(X_train_norm, Y_train_norm, covar_module=covar)
+        
+        if fit:
+            mll = ExactMarginalLogLikelihood(self.model.likelihood, self.model)
+            try:
+                fit_gpytorch_mll(mll)
+            except:
+                pass
+        elif old_state_dict:
+            self.model.load_state_dict(old_state_dict, strict=False)
+
+    def _get_model_variance(self, candidate_indices):
+        if self.model is None:
+            return torch.ones(len(candidate_indices))
+        X_candidates = self.X_all_norm[candidate_indices]
+        self.model.eval()
+        with torch.no_grad():
+            return self.model(X_candidates).variance
+
+    def select_next_point(self, other_experiments=None):
+        visited_mask = np.zeros(self.total_frames, dtype=bool)
+        visited_mask[self.visited_indices] = True
+        candidate_indices = np.where(~visited_mask)[0]
+        if len(candidate_indices) == 0:
+            return None
+        if self.acq_strategy == "random":
+            return np.random.choice(candidate_indices)
+        
+        my_variance = self._get_model_variance(candidate_indices)
+        if self.acq_strategy == "joint_uncertainty" and other_experiments:
+            variances = [my_variance] + [e._get_model_variance(candidate_indices) for e in other_experiments]
+            stacked = torch.stack(variances)
+            if stacked.shape[0] == 2:
+                weights = torch.tensor([0.8, 0.2], dtype=torch.double)
+                final_variance = torch.sum(stacked * weights.view(-1, 1), dim=0)
+            else:
+                final_variance, _ = torch.max(stacked, dim=0)
+        else:
+            final_variance = my_variance
+        
+        # Spatial suppression for wasted indices
+        if self.wasted_indices:
+            candidate_times = torch.tensor(self.timestamps[candidate_indices], dtype=torch.float32)
+            wasted_times = torch.tensor(self.timestamps[self.wasted_indices], dtype=torch.float32)
+            dists = torch.abs(candidate_times.unsqueeze(1) - wasted_times.unsqueeze(0))
+            min_dists, _ = torch.min(dists, dim=1)
+            too_close = min_dists < 1.0
+            final_variance[too_close] = -1.0
+            if torch.max(final_variance) == -1.0:
+                final_variance[too_close] = 0.0
+        
+        return candidate_indices[torch.argmax(final_variance).item()]
+
+    def add_observation(self, idx, value, fit=False):
+        if idx in self.visited_indices:
+            return False
+        self.visited_indices.append(idx)
+        if np.isnan(value):
+            self.wasted_indices.append(idx)
+            return False
+        self.train_indices.append(idx)
+        self.y_values[idx] = value
+        self.update_model(fit=fit)
+        return True
+
+    def predict_curve(self):
+        if self.model is None:
+            return None
+        self.model.eval()
+        with torch.no_grad():
+            pred_y_norm = self.model(self.X_all_norm).mean
+        return self.y_scaler.inverse_transform(pred_y_norm.numpy().reshape(-1, 1)).flatten()
+
+
+def generate_recommendations(results):
+    """Generate bike fit recommendations from GP-predicted metrics (matches Fivos's output)."""
+    k_max = results.get("max_knee_ext", 0)
+    k_min = results.get("min_knee_flex", 70)
+    h_min = results.get("min_hip_angle", 60)
+    e_avg = results.get("avg_elbow_angle", 155)
+    
+    rec = {
+        "saddle_height": {"status": "ok", "action": None, "adjustment_mm": 0, "details": ""},
+        "saddle_fore_aft": {"status": "ok", "action": None, "adjustment_mm": 0, "details": ""},
+        "crank_length": {"status": "ok", "action": None, "details": ""},
+        "cockpit": {"status": "ok", "reach_action": None, "adjustment_mm": 0, "details": ""},
+        "summary": [],
+        "metrics": {
+            "knee_max_extension": round(k_max, 1) if k_max else None,
+            "knee_min_flexion": round(k_min, 1) if k_min else None,
+            "min_hip_angle": round(h_min, 1) if h_min else None,
+            "avg_elbow_angle": round(e_avg, 1) if e_avg else None
+        }
+    }
+    
+    if not k_max:
+        rec["summary"].append("Not enough data")
+        return rec
+    
+    # 1. Saddle Height (target: 140-150 deg knee extension)
+    if k_max < 140:
+        mm = (140 - k_max) * 2.0
+        rec["saddle_height"] = {"status": "low", "action": "raise", "adjustment_mm": round(mm),
+                                "details": f"Knee ext {k_max:.0f}° below optimal. Raise ~{mm:.0f}mm."}
+        rec["summary"].append(f"Raise saddle ~{mm:.0f}mm")
+    elif k_max > 150:
+        mm = (k_max - 150) * 2.0
+        rec["saddle_height"] = {"status": "high", "action": "lower", "adjustment_mm": round(mm),
+                                "details": f"Knee ext {k_max:.0f}° - overextension risk. Lower ~{mm:.0f}mm."}
+        rec["summary"].append(f"Lower saddle ~{mm:.0f}mm")
+    else:
+        rec["saddle_height"]["details"] = f"Knee ext {k_max:.0f}° is optimal (140-150°)."
+        rec["summary"].append("Saddle height optimal")
+    
+    # 2. Saddle Fore/Aft (target: knee flexion >70 at top of stroke)
+    if k_min < 70:
+        rec["saddle_fore_aft"] = {"status": "forward", "action": "move_back", "adjustment_mm": 10,
+                                  "details": f"Knee closed at top ({k_min:.0f}°). Move back 5-10mm."}
+        rec["summary"].append("Move saddle back 5-10mm")
+    else:
+        rec["saddle_fore_aft"]["details"] = f"Knee clearance at top ({k_min:.0f}°) is good."
+    
+    # 3. Crank Length (impingement check: hip <48 or knee <68)
+    if h_min < 48 or k_min < 68:
+        rec["crank_length"] = {"status": "issue", "action": "consider_shorter",
+                               "details": f"Hip {h_min:.0f}° / Knee {k_min:.0f}° indicates impingement. Consider shorter cranks (-5mm)."}
+        rec["summary"].append("Consider shorter cranks")
+    else:
+        rec["crank_length"]["details"] = f"Hip clearance ({h_min:.0f}°) is adequate. No impingement."
+    
+    # 4. Cockpit / Stem (target: elbow 150-160 deg)
+    if e_avg > 160:
+        mm = max(10, ((e_avg - 160) / 5) * 10)
+        rec["cockpit"] = {"status": "issue", "reach_action": "shorten", "adjustment_mm": round(mm),
+                          "details": f"Arms too straight ({e_avg:.0f}°). Shorten stem ~{mm:.0f}mm."}
+        rec["summary"].append(f"Shorten stem ~{mm:.0f}mm")
+    elif e_avg < 150:
+        mm = max(10, ((150 - e_avg) / 5) * 10)
+        rec["cockpit"] = {"status": "issue", "reach_action": "lengthen", "adjustment_mm": round(mm),
+                          "details": f"Arms too bent ({e_avg:.0f}°). Lengthen stem ~{mm:.0f}mm."}
+        rec["summary"].append(f"Lengthen stem ~{mm:.0f}mm")
+    else:
+        rec["cockpit"]["details"] = f"Elbow angle ({e_avg:.0f}°) is in optimal range (150-160°)."
+    
+    return rec
+
+
 class VideoProcessor:
     """
-    Processes cycling videos to detect pose, bike angle, and generate annotated output.
-    
-    Output video contains ONLY visual overlays (skeleton + bike mask).
-    All angle data is returned separately for frontend display.
+    Smart Bike Fitter using Gaussian Process Active Learning.
+    Fast analysis - only samples ~30 frames, no video output generation.
     """
     
     def __init__(self, model_path, device="cuda"):
+        self.device = device
         self.bike_segmenter = BikeSegmenter()
         self.angle_predictor = BikeAnglePredictor(model_path, device)
         self.pose_detector = PoseDetector()
-        print("VideoProcessor: All models loaded")
+        print("VideoProcessor: All models loaded (with GP/BO support)")
     
-    def process_video(self, input_path, output_path, output_fps=10,
-                      max_duration_sec=None, start_time=0, end_time=None,
-                      progress_callback=None):
-        """
-        Process video and return frame-by-frame data.
-        
-        Args:
-            input_path: Path to input video
-            output_path: Path for output video (clean, no text overlays)
-            output_fps: Output frame rate (lower = faster processing)
-            max_duration_sec: Maximum duration to process
-            start_time: Start time in seconds
-            end_time: End time in seconds
-            progress_callback: Optional callback(current, total) for progress updates
-        
-        Returns:
-            dict with 'stats' and 'frame_data' for frontend display
-        """
+    def analyze(self, input_path, progress_callback=None, n_samples=30):
+        """Fast analysis - returns recommendations only, no video output."""
         cap = cv2.VideoCapture(input_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         
-        # Calculate frame range
-        start_frame = int(start_time * fps) if start_time > 0 else 0
-        end_frame = min(int(end_time * fps), total_frames) if end_time else total_frames
-        if max_duration_sec:
-            end_frame = min(end_frame, start_frame + int(max_duration_sec * fps))
+        # Limit to 2 minutes max
+        max_frames = min(total_frames, int(fps * 120))
+        skip = max(1, int(fps / 30))  # Scan at 30fps
+        frames_to_scan = max_frames // skip
         
-        frames_in_range = end_frame - start_frame
-        skip = max(1, int(fps / output_fps))
-        frames_to_process = frames_in_range // skip
+        # Phase 1: Scan for valid side-view frames
+        print(f"Phase 1: Scanning {frames_to_scan} frames for valid bike angles...")
+        valid_frames = []
         
-        # Output size (720p max, maintain aspect ratio)
-        out_h = min(720, h)
-        out_w = int(w * (out_h / h))
-        if out_w > 1280:
-            out_w, out_h = 1280, int(h * (1280 / w))
-        scale = out_h / h
-        
-        out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*"mp4v"), output_fps, (out_w, out_h))
-        self.pose_detector.reset_smoother()
-        
-        frame_data = []
-        
-        for i in tqdm(range(frames_to_process), desc="Processing"):
-            frame_num = start_frame + (i * skip)
+        for i in range(frames_to_scan):
+            frame_num = i * skip
             cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
             ret, frame = cap.read()
             if not ret:
                 break
             
-            # Run detection
-            pose = self.pose_detector.detect(frame)
             masked, mask, bike_found = self.bike_segmenter.mask_bike(frame)
-            bike_angle, conf = self.angle_predictor.predict(masked) if bike_found else (0, 0)
+            if not bike_found:
+                continue
             
-            # Store frame data for frontend
-            frame_data.append({
-                "frame": i,
-                "time": float(i / output_fps),
-                "bike_angle": float(bike_angle) if bike_found and conf > 0.3 else None,
-                "knee_angle": float(pose["angles"]["knee_angle"]) if "knee_angle" in pose["angles"] else None,
-                "hip_angle": float(pose["angles"]["hip_angle"]) if "hip_angle" in pose["angles"] else None,
-                "elbow_angle": float(pose["angles"]["elbow_angle"]) if "elbow_angle" in pose["angles"] else None,
-                "detected_side": pose.get("detected_side")
-            })
+            yaw, conf = self.angle_predictor.predict(masked)
             
-            # Create clean output frame (skeleton + mask only, NO text)
-            output = cv2.resize(frame, (out_w, out_h))
+            # Gating: only side-view frames (60-120 degrees)
+            if 60 <= abs(yaw) <= 120:
+                physical_time = frame_num / fps
+                valid_frames.append({"idx": frame_num, "time": physical_time, "frame": frame})
             
-            if pose["keypoints_xy"] is not None and pose["detected_side"]:
-                output = self.pose_detector.draw_skeleton(
-                    output, pose["keypoints_xy"], pose["keypoints_conf"],
-                    pose["detected_side"], scale
-                )
+            if progress_callback and i % 10 == 0:
+                progress_callback(20 + int((i / frames_to_scan) * 40), "Scanning video...")
+        
+        if len(valid_frames) < 10:
+            print("Not enough valid side-view frames")
+            cap.release()
+            return {"stats": {"frames_processed": 0, "error": "Not enough side-view frames"}}
+        
+        if progress_callback:
+            progress_callback(60, "Running AI analysis...")
+        
+        print(f"Found {len(valid_frames)} valid frames. Phase 2: Active Learning with GP...")
+        
+        # Phase 2: Active Learning with Gaussian Processes
+        timestamps = np.array([f["time"] for f in valid_frames])
+        exp_knee = ALSimExperiment(timestamps, kernel_type="rbf", acq_strategy="joint_uncertainty")
+        exp_hip = ALSimExperiment(timestamps, kernel_type="rbf", acq_strategy="joint_uncertainty")
+        exp_elbow = ALSimExperiment(timestamps, kernel_type="rbf", acq_strategy="joint_uncertainty")
+        
+        # Initialize with 5 random samples
+        init_indices = np.random.choice(len(valid_frames), min(5, len(valid_frames)), replace=False)
+        self.pose_detector.reset_smoother()
+        
+        for local_idx in init_indices:
+            self._process_sample(valid_frames[local_idx], local_idx, exp_knee, exp_hip, exp_elbow, fit=False)
+        
+        exp_knee.update_model(fit=True)
+        exp_hip.update_model(fit=True)
+        exp_elbow.update_model(fit=True)
+        
+        # Active learning loop
+        samples_taken = len(init_indices)
+        while samples_taken < n_samples:
+            next_idx = exp_knee.select_next_point(other_experiments=[exp_hip])
+            if next_idx is None:
+                break
             
-            if mask is not None and mask.max() > 0:
-                m = cv2.resize(mask, (out_w, out_h))
-                contours, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                cv2.drawContours(output, contours, -1, (0, 255, 0), 2)
+            do_fit = ((samples_taken + 1) % 5 == 0)
+            self._process_sample(valid_frames[next_idx], next_idx, exp_knee, exp_hip, exp_elbow, fit=do_fit)
+            samples_taken += 1
             
-            out.write(output)
-            if progress_callback:
-                progress_callback(i + 1, frames_to_process)
+            if progress_callback and samples_taken % 5 == 0:
+                progress_callback(60 + int((samples_taken / n_samples) * 30), "Optimizing fit...")
         
         cap.release()
-        out.release()
         
-        # Calculate stats
-        bike_angles = [f["bike_angle"] for f in frame_data if f["bike_angle"] is not None]
-        knee_angles = [f["knee_angle"] for f in frame_data if f["knee_angle"] is not None]
-        hip_angles = [f["hip_angle"] for f in frame_data if f["hip_angle"] is not None]
-        elbow_angles = [f["elbow_angle"] for f in frame_data if f["elbow_angle"] is not None]
+        if progress_callback:
+            progress_callback(95, "Generating recommendations...")
         
-        stats = {"frames_processed": len(frame_data), "output_fps": output_fps}
-        if bike_angles:
-            stats["avg_bike_angle"] = float(np.mean(bike_angles))
-        if knee_angles:
-            stats["avg_knee_angle"] = float(np.mean(knee_angles))
-        if hip_angles:
-            stats["avg_hip_angle"] = float(np.mean(hip_angles))
-        if elbow_angles:
-            stats["avg_elbow_angle"] = float(np.mean(elbow_angles))
+        # Predict full curves using GP
+        pred_knee = exp_knee.predict_curve()
+        pred_hip = exp_hip.predict_curve()
+        pred_elbow = exp_elbow.predict_curve()
         
-        return {"stats": stats, "frame_data": frame_data}
+        results = {
+            "max_knee_ext": float(np.max(pred_knee)) if pred_knee is not None else 0,
+            "min_knee_flex": float(np.min(pred_knee)) if pred_knee is not None else 70,
+            "min_hip_angle": float(np.min(pred_hip)) if pred_hip is not None else 60,
+            "avg_elbow_angle": float(np.mean(pred_elbow)) if pred_elbow is not None else 155
+        }
+        
+        recommendations = generate_recommendations(results)
+        
+        stats = {
+            "frames_processed": len(valid_frames),
+            "samples_taken": samples_taken,
+            "recommendations": recommendations
+        }
+        
+        print(f"Analysis complete. Sampled {samples_taken} frames using GP/BO.")
+        return {"stats": stats}
+    
+    def _process_sample(self, frame_info, idx, exp_knee, exp_hip, exp_elbow, fit):
+        """Process a single frame and update GP experiments."""
+        self.pose_detector.reset_smoother()
+        pose = self.pose_detector.detect(frame_info["frame"])
+        angles = pose.get("angles", {})
+        
+        k = angles.get("knee_angle", np.nan)
+        h = angles.get("hip_angle", np.nan)
+        e = angles.get("elbow_angle", np.nan)
+        
+        exp_knee.add_observation(idx, k, fit=fit)
+        exp_hip.add_observation(idx, h, fit=fit)
+        exp_elbow.add_observation(idx, e, fit=fit)
 ''')
 
 
@@ -561,38 +777,22 @@ def health() -> dict:
 @app.function(
     image=image,
     gpu="T4",
-    timeout=300,
+    timeout=180,
     volumes={"/models": model_volume, "/temp": temp_volume},
     secrets=[modal.Secret.from_name("bikefitting-api-key", required_keys=[])],
 )
 @modal.fastapi_endpoint(method="POST")
 def process_video_stream(request: dict):
     """
-    Process video with real-time progress streaming via Server-Sent Events.
-    
-    Request body:
-        video_base64: Base64 encoded video
-        api_key: API key for authentication
-        output_fps: Output frame rate (5-15)
-        start_time: Start time in seconds
-        end_time: End time in seconds
-    
-    Returns SSE stream with progress updates, then final result with frame_data.
+    Fast bike fit analysis with real-time progress streaming.
+    No video output - just returns recommendations.
     """
     from fastapi.responses import StreamingResponse
     import base64
     import json
-    import subprocess
     
     def generate():
-        # Validate request
         video_base64 = request.get("video_base64", "")
-        api_key = request.get("api_key", "")
-        
-        is_valid, msg = validate_api_key(api_key)
-        if not is_valid:
-            yield f"data: {json.dumps({'type': 'error', 'error': msg})}\n\n"
-            return
         
         if not video_base64:
             yield f"data: {json.dumps({'type': 'error', 'error': 'video_base64 required'})}\n\n"
@@ -610,32 +810,22 @@ def process_video_stream(request: dict):
             return
         
         job_id = str(uuid.uuid4())[:8]
-        yield f"data: {json.dumps({'type': 'progress', 'stage': 'upload', 'message': 'Video received', 'percent': 5})}\n\n"
-        
-        # Parse parameters
-        output_fps = max(MIN_OUTPUT_FPS, min(MAX_OUTPUT_FPS, int(request.get("output_fps", 10))))
-        max_duration = min(float(request.get("max_duration_sec", MAX_DURATION_SEC)), MAX_DURATION_SEC)
-        start_time = max(0, float(request.get("start_time", 0)))
-        end_time = float(request.get("end_time", 0))
+        yield f"data: {json.dumps({'type': 'progress', 'message': 'Video received', 'percent': 5})}\n\n"
         
         input_path = f"/temp/input_{job_id}.mp4"
-        output_path = f"/temp/output_{job_id}.mp4"
-        temp_output = f"/temp/temp_{job_id}.mp4"
         
         with open(input_path, "wb") as f:
             f.write(video_bytes)
         
-        yield f"data: {json.dumps({'type': 'progress', 'stage': 'setup', 'message': 'Loading AI models...', 'percent': 10})}\n\n"
+        yield f"data: {json.dumps({'type': 'progress', 'message': 'Loading AI models...', 'percent': 10})}\n\n"
         
         try:
-            # Setup and import processing modules
             import sys
             if "/root" not in sys.path:
                 sys.path.insert(0, "/root")
             
             setup_processing_modules()
             
-            # Clear module cache for fresh import
             for mod_name in list(sys.modules.keys()):
                 if mod_name.startswith('processing'):
                     del sys.modules[mod_name]
@@ -647,42 +837,24 @@ def process_video_stream(request: dict):
                 yield f"data: {json.dumps({'type': 'error', 'error': 'Model not found'})}\n\n"
                 return
             
-            yield f"data: {json.dumps({'type': 'progress', 'stage': 'models', 'message': 'Models loaded', 'percent': 15})}\n\n"
+            yield f"data: {json.dumps({'type': 'progress', 'message': 'Models loaded', 'percent': 15})}\n\n"
             
             processor = VideoProcessor(model_path, device="cuda")
             
-            yield f"data: {json.dumps({'type': 'progress', 'stage': 'processing', 'message': 'Processing frames...', 'percent': 20})}\n\n"
+            # Progress callback for streaming updates
+            def progress_cb(percent, message):
+                pass  # Progress is handled within analyze()
             
-            # Process video
-            result = processor.process_video(
-                input_path=input_path,
-                output_path=temp_output,
-                output_fps=output_fps,
-                max_duration_sec=max_duration,
-                start_time=start_time,
-                end_time=end_time if end_time > 0 else None
-            )
+            yield f"data: {json.dumps({'type': 'progress', 'message': 'Analyzing video...', 'percent': 20})}\n\n"
+            
+            # Fast analysis - no video output
+            result = processor.analyze(input_path)
             
             stats = result.get("stats", {})
-            frame_data = result.get("frame_data", [])
             
-            yield f"data: {json.dumps({'type': 'progress', 'stage': 'encoding', 'message': 'Encoding video...', 'percent': 85})}\n\n"
-            
-            # Convert to H.264 for browser compatibility
-            subprocess.run([
-                "ffmpeg", "-y", "-i", temp_output,
-                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-                output_path
-            ], capture_output=True)
-            
-            if os.path.exists(temp_output):
-                os.remove(temp_output)
-            
-            yield f"data: {json.dumps({'type': 'progress', 'stage': 'finalizing', 'message': 'Saving...', 'percent': 95})}\n\n"
-            
-            temp_volume.commit()
-            os.remove(input_path)
+            # Cleanup
+            if os.path.exists(input_path):
+                os.remove(input_path)
             
             # Convert numpy types for JSON serialization
             def to_python(obj):
@@ -694,12 +866,11 @@ def process_video_stream(request: dict):
                     return [to_python(v) for v in obj]
                 return obj
             
-            yield f"data: {json.dumps({'type': 'complete', 'job_id': job_id, 'stats': to_python(stats), 'frame_data': to_python(frame_data), 'percent': 100})}\n\n"
+            yield f"data: {json.dumps({'type': 'complete', 'stats': to_python(stats), 'percent': 100})}\n\n"
             
         except Exception as e:
-            for path in [input_path, output_path, temp_output]:
-                if os.path.exists(path):
-                    os.remove(path)
+            if os.path.exists(input_path):
+                os.remove(input_path)
             yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
     
     return StreamingResponse(

@@ -1,25 +1,35 @@
 'use client'
 
-import { useRef, useState, useEffect } from 'react'
-import { Download, RotateCcw, CheckCircle2, Bike, Activity } from 'lucide-react'
+import { RotateCcw, CheckCircle, AlertTriangle, ArrowUp, ArrowDown, Minus } from 'lucide-react'
 
-interface FrameData {
-  frame: number
-  time: number
-  bike_angle: number | null
-  knee_angle: number | null
-  hip_angle: number | null
-  elbow_angle: number | null
-  detected_side: string | null
+export interface Recommendation {
+  status: string
+  action?: string | null
+  adjustment_mm?: number
+  details?: string
+  reach_action?: string | null
 }
 
-interface ProcessingResult {
-  resultUrl: string
+export interface Recommendations {
+  saddle_height: Recommendation
+  saddle_fore_aft: Recommendation
+  crank_length: Recommendation
+  cockpit: Recommendation
+  summary: string[]
+  metrics: {
+    knee_max_extension: number | null
+    knee_min_flexion: number | null
+    min_hip_angle: number | null
+    avg_elbow_angle: number | null
+  }
+}
+
+export interface ProcessingResult {
   stats: {
     frames_processed: number
-    output_fps?: number
+    samples_taken?: number
+    recommendations?: Recommendations
   }
-  frameData?: FrameData[]
 }
 
 interface ResultsViewerProps {
@@ -28,129 +38,101 @@ interface ResultsViewerProps {
 }
 
 export default function ResultsViewer({ result, onReset }: ResultsViewerProps) {
-  const { stats, frameData } = result
-  const videoRef = useRef<HTMLVideoElement>(null)
-  const [currentFrame, setCurrentFrame] = useState<FrameData | null>(null)
+  const { stats } = result
+  const recommendations = stats.recommendations
 
-  // Sync video playback with frame data
-  useEffect(() => {
-    const video = videoRef.current
-    if (!video || !frameData || frameData.length === 0) return
+  if (!recommendations) {
+    return (
+      <div className="text-center py-12">
+        <p className="text-secondary">No recommendations available</p>
+        <button onClick={onReset} className="btn-primary mt-6">
+          Try Again
+        </button>
+      </div>
+    )
+  }
 
-    const handleTimeUpdate = () => {
-      const currentTime = video.currentTime
-      
-      // Find the closest frame by time
-      let closestFrame = frameData[0]
-      let minDiff = Math.abs(currentTime - closestFrame.time)
+  const { metrics, summary, saddle_height, saddle_fore_aft, crank_length, cockpit } = recommendations
 
-      for (const frame of frameData) {
-        const diff = Math.abs(currentTime - frame.time)
-        if (diff < minDiff) {
-          minDiff = diff
-          closestFrame = frame
-        }
-      }
-
-      setCurrentFrame(closestFrame)
-    }
-
-    video.addEventListener('timeupdate', handleTimeUpdate)
-    handleTimeUpdate() // Set initial frame
-
-    return () => video.removeEventListener('timeupdate', handleTimeUpdate)
-  }, [frameData])
+  // Count issues
+  const issueCount = summary.filter(s => 
+    !s.includes('optimal') && !s.includes('good')
+  ).length
 
   return (
-    <div className="space-y-6">
-      {/* Success Header */}
-      <div className="glass rounded-2xl p-4 border border-brand-500/30 bg-brand-500/5">
-        <div className="flex items-center gap-3">
-          <CheckCircle2 className="w-5 h-5 text-brand-400" />
-          <p className="text-brand-400">
-            Analysis Complete — {stats.frames_processed} frames
-          </p>
+    <div className="space-y-8">
+      {/* Header */}
+      <div className="text-center animate-fade-in">
+        <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-[var(--accent-dim)] mb-4">
+          <CheckCircle className="w-8 h-8 text-[#30d158]" />
         </div>
+        <h2 className="text-3xl font-semibold tracking-tight">Analysis Complete</h2>
+        <p className="text-secondary mt-2">
+          {stats.samples_taken || stats.frames_processed} frames analyzed
+          {issueCount > 0 ? ` • ${issueCount} adjustment${issueCount > 1 ? 's' : ''} suggested` : ' • All optimal'}
+        </p>
       </div>
 
-      {/* Video + Live Data */}
-      <div className="grid lg:grid-cols-[1fr,280px] gap-4">
-        {/* Video Player */}
-        <div className="video-container">
-          <video
-            ref={videoRef}
-            src={result.resultUrl}
-            className="w-full aspect-video rounded-xl"
-            controls
-            autoPlay
-            loop
-            muted
+      {/* Metrics Grid */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 animate-fade-in stagger-1">
+        <MetricCard
+          label="Knee Extension"
+          value={metrics.knee_max_extension}
+          target="140-150°"
+          status={getKneeStatus(metrics.knee_max_extension)}
+        />
+        <MetricCard
+          label="Knee Flexion"
+          value={metrics.knee_min_flexion}
+          target=">70°"
+          status={metrics.knee_min_flexion && metrics.knee_min_flexion >= 70 ? 'ok' : 'warning'}
+        />
+        <MetricCard
+          label="Hip Angle"
+          value={metrics.min_hip_angle}
+          target=">48°"
+          status={metrics.min_hip_angle && metrics.min_hip_angle >= 48 ? 'ok' : 'warning'}
+        />
+        <MetricCard
+          label="Elbow Angle"
+          value={metrics.avg_elbow_angle}
+          target="150-160°"
+          status={getElbowStatus(metrics.avg_elbow_angle)}
+        />
+      </div>
+
+      {/* Recommendations */}
+      <div className="space-y-3">
+        <h3 className="text-sm font-medium text-secondary uppercase tracking-wider animate-fade-in stagger-2">
+          Adjustments
+        </h3>
+        <div className="grid md:grid-cols-2 gap-3">
+          <RecommendationCard
+            title="Saddle Height"
+            recommendation={saddle_height}
+            className="animate-fade-in stagger-2"
+          />
+          <RecommendationCard
+            title="Saddle Position"
+            recommendation={saddle_fore_aft}
+            className="animate-fade-in stagger-3"
+          />
+          <RecommendationCard
+            title="Crank Length"
+            recommendation={crank_length}
+            className="animate-fade-in stagger-4"
+          />
+          <RecommendationCard
+            title="Stem / Reach"
+            recommendation={cockpit}
+            className="animate-fade-in stagger-5"
           />
         </div>
-
-        {/* Live Data Panel */}
-        <div className="glass rounded-xl p-4 space-y-4">
-          <div className="text-xs text-surface-500 uppercase tracking-wide">
-            Live Analysis
-          </div>
-
-          {/* Bike Angle */}
-          <div className="space-y-1">
-            <div className="flex items-center gap-2 text-sm text-surface-400">
-              <Bike className="w-4 h-4" />
-              <span>Bike Angle</span>
-            </div>
-            <div className="text-3xl font-bold font-mono text-brand-400">
-              {currentFrame?.bike_angle != null
-                ? `${currentFrame.bike_angle.toFixed(1)}°`
-                : '—'}
-            </div>
-          </div>
-
-          {/* Joint Angles */}
-          <div className="border-t border-surface-800 pt-4">
-            <div className="flex items-center gap-2 text-sm text-surface-400 mb-3">
-              <Activity className="w-4 h-4" />
-              <span>Joint Angles</span>
-              {currentFrame?.detected_side && (
-                <span className="text-xs px-2 py-0.5 bg-surface-800 rounded">
-                  {currentFrame.detected_side}
-                </span>
-              )}
-            </div>
-
-            <div className="space-y-3">
-              <AngleRow label="Knee" value={currentFrame?.knee_angle} color="text-cyan-400" />
-              <AngleRow label="Hip" value={currentFrame?.hip_angle} color="text-orange-400" />
-              <AngleRow label="Elbow" value={currentFrame?.elbow_angle} color="text-purple-400" />
-            </div>
-          </div>
-
-          {/* Frame Counter */}
-          <div className="border-t border-surface-800 pt-4 text-xs text-surface-500">
-            Frame {currentFrame?.frame ?? 0} / {stats.frames_processed}
-          </div>
-        </div>
       </div>
 
-      {/* Action Buttons */}
-      <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-        <button
-          onClick={() => {
-            const a = document.createElement('a')
-            a.href = result.resultUrl
-            a.download = 'bikefitting_analysis.mp4'
-            a.click()
-          }}
-          className="w-full sm:w-auto px-6 py-3 rounded-xl bg-brand-500 hover:bg-brand-600 text-white font-medium transition-colors flex items-center justify-center gap-2 glow-green"
-        >
-          <Download className="w-4 h-4" />
-          Download Video
-        </button>
-        <button
-          onClick={onReset}
-          className="w-full sm:w-auto px-6 py-3 rounded-xl bg-surface-800 hover:bg-surface-700 text-white font-medium transition-colors flex items-center justify-center gap-2"
-        >
+      {/* Action */}
+      <div className="flex justify-center pt-4 animate-fade-in stagger-6">
+        <button onClick={onReset} className="btn-secondary flex items-center gap-2">
           <RotateCcw className="w-4 h-4" />
           Analyze Another Video
         </button>
@@ -159,13 +141,76 @@ export default function ResultsViewer({ result, onReset }: ResultsViewerProps) {
   )
 }
 
-function AngleRow({ label, value, color }: { label: string; value?: number | null; color: string }) {
+function MetricCard({ label, value, target, status }: {
+  label: string
+  value: number | null
+  target: string
+  status: 'ok' | 'warning' | 'error'
+}) {
+  const statusClass = status === 'ok' ? 'status-ok' : status === 'warning' ? 'status-warning' : 'status-error'
+  
   return (
-    <div className="flex items-center justify-between">
-      <span className="text-sm text-surface-400">{label}</span>
-      <span className={`text-lg font-mono font-semibold ${value != null ? color : 'text-surface-600'}`}>
-        {value != null ? `${value.toFixed(1)}°` : '—'}
-      </span>
+    <div className={`card p-4 ${statusClass}`}>
+      <p className="text-xs opacity-60 mb-1">{label}</p>
+      <p className="text-2xl font-semibold tabular-nums">
+        {value != null ? `${Math.round(value)}°` : '—'}
+      </p>
+      <p className="text-xs opacity-50 mt-1">{target}</p>
     </div>
   )
+}
+
+function RecommendationCard({ title, recommendation, className }: {
+  title: string
+  recommendation: Recommendation
+  className?: string
+}) {
+  const isOk = recommendation.status === 'ok'
+  const hasAction = recommendation.action || recommendation.reach_action
+  
+  const getIcon = () => {
+    if (isOk) return <CheckCircle className="w-5 h-5 text-[#30d158]" />
+    
+    const action = recommendation.action || recommendation.reach_action
+    if (action === 'raise' || action === 'lengthen') return <ArrowUp className="w-5 h-5 text-[#ffd60a]" />
+    if (action === 'lower' || action === 'shorten' || action === 'move_back') return <ArrowDown className="w-5 h-5 text-[#ffd60a]" />
+    if (action === 'consider_shorter') return <AlertTriangle className="w-5 h-5 text-[#ffd60a]" />
+    return <Minus className="w-5 h-5 text-[var(--surface-300)]" />
+  }
+
+  return (
+    <div className={`card p-4 flex items-start gap-4 ${className}`}>
+      <div className="flex-shrink-0 mt-0.5">
+        {getIcon()}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center justify-between gap-2">
+          <h4 className="font-medium">{title}</h4>
+          {hasAction && recommendation.adjustment_mm != null && recommendation.adjustment_mm > 0 && (
+            <span className="text-sm font-medium text-[#30d158] tabular-nums">
+              {recommendation.action === 'raise' || recommendation.reach_action === 'lengthen' ? '+' : '−'}
+              {recommendation.adjustment_mm}mm
+            </span>
+          )}
+        </div>
+        <p className="text-sm text-secondary mt-1">
+          {recommendation.details || 'No adjustment needed'}
+        </p>
+      </div>
+    </div>
+  )
+}
+
+function getKneeStatus(value: number | null): 'ok' | 'warning' | 'error' {
+  if (!value) return 'warning'
+  if (value >= 140 && value <= 150) return 'ok'
+  if (value >= 135 && value <= 155) return 'warning'
+  return 'error'
+}
+
+function getElbowStatus(value: number | null): 'ok' | 'warning' | 'error' {
+  if (!value) return 'warning'
+  if (value >= 150 && value <= 160) return 'ok'
+  if (value >= 145 && value <= 165) return 'warning'
+  return 'error'
 }
