@@ -3,31 +3,9 @@
 import { useState } from 'react'
 import { Bike } from 'lucide-react'
 import VideoUploader from '@/components/VideoUploader'
-import ResultsViewer from '@/components/ResultsViewer'
+import ResultsViewer, { ProcessingResult } from '@/components/ResultsViewer'
 
 type ProcessingStatus = 'idle' | 'uploading' | 'processing' | 'completed' | 'error'
-
-interface FrameData {
-  frame: number
-  time: number
-  bike_angle: number | null
-  knee_angle: number | null
-  hip_angle: number | null
-  elbow_angle: number | null
-  detected_side: string | null
-  is_valid?: boolean
-}
-
-interface ProcessingResult {
-  resultUrl: string
-  stats: { 
-    frames_processed: number
-    output_fps?: number
-    valid_frames?: number
-    recommendations?: Record<string, unknown>
-  }
-  frameData?: FrameData[]
-}
 
 export default function Home() {
   const [status, setStatus] = useState<ProcessingStatus>('idle')

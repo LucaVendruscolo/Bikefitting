@@ -3,7 +3,7 @@
 import { useRef, useState, useEffect } from 'react'
 import { Download, RotateCcw, CheckCircle2, Bike, Activity, Wrench, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, AlertTriangle, Check } from 'lucide-react'
 
-interface FrameData {
+export interface FrameData {
   frame: number
   time: number
   bike_angle: number | null
@@ -14,7 +14,7 @@ interface FrameData {
   is_valid?: boolean
 }
 
-interface Recommendation {
+export interface Recommendation {
   status: string
   action?: string | null
   adjustment_mm?: number
@@ -23,7 +23,7 @@ interface Recommendation {
   reach_action?: string | null
 }
 
-interface Recommendations {
+export interface Recommendations {
   saddle_height: Recommendation
   saddle_fore_aft: Recommendation
   crank_length: Recommendation
@@ -37,7 +37,7 @@ interface Recommendations {
   }
 }
 
-interface ProcessingResult {
+export interface ProcessingResult {
   resultUrl: string
   stats: {
     frames_processed: number
