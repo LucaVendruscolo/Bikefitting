@@ -1,7 +1,7 @@
 'use client'
 
 import { useRef, useState, useEffect } from 'react'
-import { Download, RotateCcw, CheckCircle2, Bike, Activity } from 'lucide-react'
+import { Download, RotateCcw, CheckCircle2, Bike, Activity, Wrench, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, AlertTriangle, Check } from 'lucide-react'
 
 interface FrameData {
   frame: number
@@ -11,6 +11,30 @@ interface FrameData {
   hip_angle: number | null
   elbow_angle: number | null
   detected_side: string | null
+  is_valid?: boolean
+}
+
+interface Recommendation {
+  status: string
+  action?: string | null
+  adjustment_mm?: number
+  details?: string
+  stack_action?: string | null
+  reach_action?: string | null
+}
+
+interface Recommendations {
+  saddle_height: Recommendation
+  saddle_fore_aft: Recommendation
+  crank_length: Recommendation
+  cockpit: Recommendation
+  summary: string[]
+  metrics: {
+    knee_max_extension: number | null
+    knee_min_flexion: number | null
+    min_hip_angle: number | null
+    avg_elbow_angle: number | null
+  }
 }
 
 interface ProcessingResult {
@@ -18,6 +42,8 @@ interface ProcessingResult {
   stats: {
     frames_processed: number
     output_fps?: number
+    valid_frames?: number
+    recommendations?: Recommendations
   }
   frameData?: FrameData[]
 }
@@ -133,6 +159,11 @@ export default function ResultsViewer({ result, onReset }: ResultsViewerProps) {
         </div>
       </div>
 
+      {/* Recommendations Panel */}
+      {stats.recommendations && (
+        <RecommendationsPanel recommendations={stats.recommendations} />
+      )}
+
       {/* Action Buttons */}
       <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
         <button
@@ -157,6 +188,164 @@ export default function ResultsViewer({ result, onReset }: ResultsViewerProps) {
       </div>
     </div>
   )
+}
+
+function RecommendationsPanel({ recommendations }: { recommendations: Recommendations }) {
+  const { metrics, summary, saddle_height, saddle_fore_aft, crank_length, cockpit } = recommendations
+  
+  return (
+    <div className="glass rounded-2xl p-6 border border-surface-700">
+      <div className="flex items-center gap-3 mb-6">
+        <Wrench className="w-5 h-5 text-brand-400" />
+        <h3 className="text-lg font-semibold text-white">Bike Fit Recommendations</h3>
+      </div>
+
+      {/* Quick Summary */}
+      {summary && summary.length > 0 && (
+        <div className="mb-6 p-4 rounded-xl bg-surface-800/50 border border-surface-700">
+          <div className="text-sm text-surface-400 mb-2">Summary</div>
+          <div className="space-y-2">
+            {summary.map((item, idx) => (
+              <div key={idx} className="flex items-center gap-2 text-sm">
+                {item.includes('optimal') || item.includes('good') || item.includes('✅') ? (
+                  <Check className="w-4 h-4 text-green-400 flex-shrink-0" />
+                ) : item.includes('Consider') || item.includes('⚠️') ? (
+                  <AlertTriangle className="w-4 h-4 text-yellow-400 flex-shrink-0" />
+                ) : (
+                  <Wrench className="w-4 h-4 text-brand-400 flex-shrink-0" />
+                )}
+                <span className="text-surface-300">{item.replace(/[🔧✅⚠️]/g, '').trim()}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Detailed Metrics */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <MetricCard 
+          label="Max Knee Extension" 
+          value={metrics.knee_max_extension} 
+          unit="°"
+          target="140-150°"
+          status={getKneeStatus(metrics.knee_max_extension)}
+        />
+        <MetricCard 
+          label="Min Knee Flexion" 
+          value={metrics.knee_min_flexion} 
+          unit="°"
+          target=">70°"
+          status={metrics.knee_min_flexion && metrics.knee_min_flexion >= 70 ? 'ok' : 'warning'}
+        />
+        <MetricCard 
+          label="Min Hip Angle" 
+          value={metrics.min_hip_angle} 
+          unit="°"
+          target=">48°"
+          status={metrics.min_hip_angle && metrics.min_hip_angle >= 48 ? 'ok' : 'warning'}
+        />
+        <MetricCard 
+          label="Avg Elbow Angle" 
+          value={metrics.avg_elbow_angle} 
+          unit="°"
+          target="150-165°"
+          status={getElbowStatus(metrics.avg_elbow_angle)}
+        />
+      </div>
+
+      {/* Adjustment Details */}
+      <div className="grid md:grid-cols-2 gap-4">
+        <AdjustmentCard
+          title="Saddle Height"
+          recommendation={saddle_height}
+          icon={saddle_height.action === 'raise' ? <ArrowUp className="w-4 h-4" /> : 
+                saddle_height.action === 'lower' ? <ArrowDown className="w-4 h-4" /> : 
+                <Check className="w-4 h-4" />}
+        />
+        <AdjustmentCard
+          title="Saddle Position"
+          recommendation={saddle_fore_aft}
+          icon={saddle_fore_aft.action === 'move_back' ? <ArrowLeft className="w-4 h-4" /> : 
+                <Check className="w-4 h-4" />}
+        />
+        <AdjustmentCard
+          title="Stem / Reach"
+          recommendation={cockpit}
+          icon={cockpit.reach_action === 'shorten' ? <ArrowLeft className="w-4 h-4" /> : 
+                cockpit.reach_action === 'lengthen' ? <ArrowRight className="w-4 h-4" /> : 
+                <Check className="w-4 h-4" />}
+        />
+        <AdjustmentCard
+          title="Crank Length"
+          recommendation={crank_length}
+          icon={crank_length.action === 'consider_shorter' ? <AlertTriangle className="w-4 h-4" /> : 
+                <Check className="w-4 h-4" />}
+        />
+      </div>
+    </div>
+  )
+}
+
+function MetricCard({ label, value, unit, target, status }: { 
+  label: string
+  value: number | null
+  unit: string
+  target: string
+  status: 'ok' | 'warning' | 'error'
+}) {
+  const statusColors = {
+    ok: 'text-green-400 border-green-500/30 bg-green-500/5',
+    warning: 'text-yellow-400 border-yellow-500/30 bg-yellow-500/5',
+    error: 'text-red-400 border-red-500/30 bg-red-500/5'
+  }
+  
+  return (
+    <div className={`p-3 rounded-lg border ${statusColors[status]}`}>
+      <div className="text-xs text-surface-500 mb-1">{label}</div>
+      <div className="text-xl font-bold font-mono">
+        {value != null ? `${value.toFixed(0)}${unit}` : '—'}
+      </div>
+      <div className="text-xs text-surface-600 mt-1">Target: {target}</div>
+    </div>
+  )
+}
+
+function AdjustmentCard({ title, recommendation, icon }: {
+  title: string
+  recommendation: Recommendation
+  icon: React.ReactNode
+}) {
+  const isOk = recommendation.status === 'ok'
+  
+  return (
+    <div className={`p-4 rounded-lg border ${isOk ? 'border-surface-700 bg-surface-800/30' : 'border-brand-500/30 bg-brand-500/5'}`}>
+      <div className="flex items-center gap-2 mb-2">
+        <span className={isOk ? 'text-green-400' : 'text-brand-400'}>{icon}</span>
+        <span className="font-medium text-white">{title}</span>
+        {recommendation.adjustment_mm && recommendation.adjustment_mm > 0 && (
+          <span className="ml-auto text-sm font-mono text-brand-400">
+            {recommendation.action === 'raise' || recommendation.reach_action === 'lengthen' ? '+' : '-'}
+            {recommendation.adjustment_mm}mm
+          </span>
+        )}
+      </div>
+      <p className="text-sm text-surface-400">{recommendation.details || 'No adjustments needed'}</p>
+    </div>
+  )
+}
+
+function getKneeStatus(value: number | null): 'ok' | 'warning' | 'error' {
+  if (!value) return 'warning'
+  if (value >= 140 && value <= 150) return 'ok'
+  if (value >= 135 && value <= 155) return 'warning'
+  return 'error'
+}
+
+function getElbowStatus(value: number | null): 'ok' | 'warning' | 'error' {
+  if (!value) return 'warning'
+  if (value >= 150 && value <= 165) return 'ok'
+  if (value >= 145 && value <= 170) return 'warning'
+  return 'error'
 }
 
 function AngleRow({ label, value, color }: { label: string; value?: number | null; color: string }) {
