@@ -626,7 +626,7 @@ def generate_recommendations(results):
 class VideoProcessor:
     """
     Smart Bike Fitter using Gaussian Process Active Learning.
-    Only samples ~30 frames instead of processing all frames.
+    Fast analysis - only samples ~30 frames, no video output generation.
     """
     
     def __init__(self, model_path, device="cuda"):
@@ -636,39 +636,23 @@ class VideoProcessor:
         self.pose_detector = PoseDetector()
         print("VideoProcessor: All models loaded (with GP/BO support)")
     
-    def process_video(self, input_path, output_path, output_fps=10,
-                      max_duration_sec=None, start_time=0, end_time=None,
-                      progress_callback=None, n_samples=30):
+    def analyze(self, input_path, progress_callback=None, n_samples=30):
+        """Fast analysis - returns recommendations only, no video output."""
         cap = cv2.VideoCapture(input_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         
-        start_frame = int(start_time * fps) if start_time > 0 else 0
-        end_frame = min(int(end_time * fps), total_frames) if end_time else total_frames
-        if max_duration_sec:
-            end_frame = min(end_frame, start_frame + int(max_duration_sec * fps))
-        
-        frames_in_range = end_frame - start_frame
+        # Limit to 2 minutes max
+        max_frames = min(total_frames, int(fps * 120))
         skip = max(1, int(fps / 30))  # Scan at 30fps
-        frames_to_scan = frames_in_range // skip
-        
-        # Output video setup
-        out_h = min(720, h)
-        out_w = int(w * (out_h / h))
-        if out_w > 1280:
-            out_w, out_h = 1280, int(h * (1280 / w))
-        scale = out_h / h
-        
-        out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*"mp4v"), output_fps, (out_w, out_h))
+        frames_to_scan = max_frames // skip
         
         # Phase 1: Scan for valid side-view frames
         print(f"Phase 1: Scanning {frames_to_scan} frames for valid bike angles...")
         valid_frames = []
-        frame_data = []
         
-        for i in tqdm(range(frames_to_scan), desc="Scanning"):
-            frame_num = start_frame + (i * skip)
+        for i in range(frames_to_scan):
+            frame_num = i * skip
             cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
             ret, frame = cap.read()
             if not ret:
@@ -685,14 +669,16 @@ class VideoProcessor:
                 physical_time = frame_num / fps
                 valid_frames.append({"idx": frame_num, "time": physical_time, "frame": frame})
             
-            if progress_callback:
-                progress_callback(i + 1, frames_to_scan + n_samples)
+            if progress_callback and i % 10 == 0:
+                progress_callback(20 + int((i / frames_to_scan) * 40), "Scanning video...")
         
         if len(valid_frames) < 10:
             print("Not enough valid side-view frames")
             cap.release()
-            out.release()
-            return {"stats": {"frames_processed": 0, "error": "Not enough side-view frames"}, "frame_data": []}
+            return {"stats": {"frames_processed": 0, "error": "Not enough side-view frames"}}
+        
+        if progress_callback:
+            progress_callback(60, "Running AI analysis...")
         
         print(f"Found {len(valid_frames)} valid frames. Phase 2: Active Learning with GP...")
         
@@ -724,10 +710,13 @@ class VideoProcessor:
             self._process_sample(valid_frames[next_idx], next_idx, exp_knee, exp_hip, exp_elbow, fit=do_fit)
             samples_taken += 1
             
-            if progress_callback:
-                progress_callback(frames_to_scan + samples_taken, frames_to_scan + n_samples)
+            if progress_callback and samples_taken % 5 == 0:
+                progress_callback(60 + int((samples_taken / n_samples) * 30), "Optimizing fit...")
         
         cap.release()
+        
+        if progress_callback:
+            progress_callback(95, "Generating recommendations...")
         
         # Predict full curves using GP
         pred_knee = exp_knee.predict_curve()
@@ -741,45 +730,16 @@ class VideoProcessor:
             "avg_elbow_angle": float(np.mean(pred_elbow)) if pred_elbow is not None else 155
         }
         
-        # Generate output video from sampled frames
-        for i, vf in enumerate(valid_frames[:min(100, len(valid_frames))]):
-            output = cv2.resize(vf["frame"], (out_w, out_h))
-            pose = self.pose_detector.detect(vf["frame"])
-            if pose["keypoints_xy"] is not None:
-                output = self.pose_detector.draw_skeleton(
-                    output, pose["keypoints_xy"], pose["keypoints_conf"],
-                    pose.get("detected_side"), scale
-                )
-            out.write(output)
-            
-            frame_data.append({
-                "frame": i,
-                "time": vf["time"],
-                "knee_angle": float(pred_knee[i]) if pred_knee is not None and i < len(pred_knee) else None,
-                "hip_angle": float(pred_hip[i]) if pred_hip is not None and i < len(pred_hip) else None,
-                "elbow_angle": float(pred_elbow[i]) if pred_elbow is not None and i < len(pred_elbow) else None,
-                "is_valid": True
-            })
-        
-        out.release()
-        
         recommendations = generate_recommendations(results)
         
         stats = {
             "frames_processed": len(valid_frames),
             "samples_taken": samples_taken,
-            "output_fps": output_fps,
-            "valid_frames": len(valid_frames),
-            "knee_max_extension": results["max_knee_ext"],
-            "knee_min_flexion": results["min_knee_flex"],
-            "min_hip_angle": results["min_hip_angle"],
-            "avg_elbow_angle": results["avg_elbow_angle"],
-            "recommendations": recommendations,
-            "method": "Gaussian Process Active Learning"
+            "recommendations": recommendations
         }
         
         print(f"Analysis complete. Sampled {samples_taken} frames using GP/BO.")
-        return {"stats": stats, "frame_data": frame_data}
+        return {"stats": stats}
     
     def _process_sample(self, frame_info, idx, exp_knee, exp_hip, exp_elbow, fit):
         """Process a single frame and update GP experiments."""
@@ -817,38 +777,22 @@ def health() -> dict:
 @app.function(
     image=image,
     gpu="T4",
-    timeout=300,
+    timeout=180,
     volumes={"/models": model_volume, "/temp": temp_volume},
     secrets=[modal.Secret.from_name("bikefitting-api-key", required_keys=[])],
 )
 @modal.fastapi_endpoint(method="POST")
 def process_video_stream(request: dict):
     """
-    Process video with real-time progress streaming via Server-Sent Events.
-    
-    Request body:
-        video_base64: Base64 encoded video
-        api_key: API key for authentication
-        output_fps: Output frame rate (5-15)
-        start_time: Start time in seconds
-        end_time: End time in seconds
-    
-    Returns SSE stream with progress updates, then final result with frame_data.
+    Fast bike fit analysis with real-time progress streaming.
+    No video output - just returns recommendations.
     """
     from fastapi.responses import StreamingResponse
     import base64
     import json
-    import subprocess
     
     def generate():
-        # Validate request
         video_base64 = request.get("video_base64", "")
-        api_key = request.get("api_key", "")
-        
-        is_valid, msg = validate_api_key(api_key)
-        if not is_valid:
-            yield f"data: {json.dumps({'type': 'error', 'error': msg})}\n\n"
-            return
         
         if not video_base64:
             yield f"data: {json.dumps({'type': 'error', 'error': 'video_base64 required'})}\n\n"
@@ -866,32 +810,22 @@ def process_video_stream(request: dict):
             return
         
         job_id = str(uuid.uuid4())[:8]
-        yield f"data: {json.dumps({'type': 'progress', 'stage': 'upload', 'message': 'Video received', 'percent': 5})}\n\n"
-        
-        # Parse parameters
-        output_fps = max(MIN_OUTPUT_FPS, min(MAX_OUTPUT_FPS, int(request.get("output_fps", 10))))
-        max_duration = min(float(request.get("max_duration_sec", MAX_DURATION_SEC)), MAX_DURATION_SEC)
-        start_time = max(0, float(request.get("start_time", 0)))
-        end_time = float(request.get("end_time", 0))
+        yield f"data: {json.dumps({'type': 'progress', 'message': 'Video received', 'percent': 5})}\n\n"
         
         input_path = f"/temp/input_{job_id}.mp4"
-        output_path = f"/temp/output_{job_id}.mp4"
-        temp_output = f"/temp/temp_{job_id}.mp4"
         
         with open(input_path, "wb") as f:
             f.write(video_bytes)
         
-        yield f"data: {json.dumps({'type': 'progress', 'stage': 'setup', 'message': 'Loading AI models...', 'percent': 10})}\n\n"
+        yield f"data: {json.dumps({'type': 'progress', 'message': 'Loading AI models...', 'percent': 10})}\n\n"
         
         try:
-            # Setup and import processing modules
             import sys
             if "/root" not in sys.path:
                 sys.path.insert(0, "/root")
             
             setup_processing_modules()
             
-            # Clear module cache for fresh import
             for mod_name in list(sys.modules.keys()):
                 if mod_name.startswith('processing'):
                     del sys.modules[mod_name]
@@ -903,42 +837,24 @@ def process_video_stream(request: dict):
                 yield f"data: {json.dumps({'type': 'error', 'error': 'Model not found'})}\n\n"
                 return
             
-            yield f"data: {json.dumps({'type': 'progress', 'stage': 'models', 'message': 'Models loaded', 'percent': 15})}\n\n"
+            yield f"data: {json.dumps({'type': 'progress', 'message': 'Models loaded', 'percent': 15})}\n\n"
             
             processor = VideoProcessor(model_path, device="cuda")
             
-            yield f"data: {json.dumps({'type': 'progress', 'stage': 'processing', 'message': 'Processing frames...', 'percent': 20})}\n\n"
+            # Progress callback for streaming updates
+            def progress_cb(percent, message):
+                pass  # Progress is handled within analyze()
             
-            # Process video
-            result = processor.process_video(
-                input_path=input_path,
-                output_path=temp_output,
-                output_fps=output_fps,
-                max_duration_sec=max_duration,
-                start_time=start_time,
-                end_time=end_time if end_time > 0 else None
-            )
+            yield f"data: {json.dumps({'type': 'progress', 'message': 'Analyzing video...', 'percent': 20})}\n\n"
+            
+            # Fast analysis - no video output
+            result = processor.analyze(input_path)
             
             stats = result.get("stats", {})
-            frame_data = result.get("frame_data", [])
             
-            yield f"data: {json.dumps({'type': 'progress', 'stage': 'encoding', 'message': 'Encoding video...', 'percent': 85})}\n\n"
-            
-            # Convert to H.264 for browser compatibility
-            subprocess.run([
-                "ffmpeg", "-y", "-i", temp_output,
-                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-                output_path
-            ], capture_output=True)
-            
-            if os.path.exists(temp_output):
-                os.remove(temp_output)
-            
-            yield f"data: {json.dumps({'type': 'progress', 'stage': 'finalizing', 'message': 'Saving...', 'percent': 95})}\n\n"
-            
-            temp_volume.commit()
-            os.remove(input_path)
+            # Cleanup
+            if os.path.exists(input_path):
+                os.remove(input_path)
             
             # Convert numpy types for JSON serialization
             def to_python(obj):
@@ -950,12 +866,11 @@ def process_video_stream(request: dict):
                     return [to_python(v) for v in obj]
                 return obj
             
-            yield f"data: {json.dumps({'type': 'complete', 'job_id': job_id, 'stats': to_python(stats), 'frame_data': to_python(frame_data), 'percent': 100})}\n\n"
+            yield f"data: {json.dumps({'type': 'complete', 'stats': to_python(stats), 'percent': 100})}\n\n"
             
         except Exception as e:
-            for path in [input_path, output_path, temp_output]:
-                if os.path.exists(path):
-                    os.remove(path)
+            if os.path.exists(input_path):
+                os.remove(input_path)
             yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
     
     return StreamingResponse(

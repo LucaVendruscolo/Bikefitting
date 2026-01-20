@@ -1,7 +1,6 @@
 'use client'
 
 import { useState } from 'react'
-import { Bike } from 'lucide-react'
 import VideoUploader from '@/components/VideoUploader'
 import ResultsViewer, { ProcessingResult } from '@/components/ResultsViewer'
 
@@ -21,38 +20,54 @@ export default function Home() {
   }
 
   return (
-    <main className="min-h-screen">
+    <main className="min-h-screen flex flex-col">
       {/* Header */}
-      <header className="border-b border-surface-800/50 glass sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center h-16">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-brand-500 to-brand-600 flex items-center justify-center glow-green">
-                <Bike className="w-5 h-5 text-white" />
-              </div>
-              <h1 className="text-lg font-semibold tracking-tight">BikeFit AI</h1>
+      <header className="glass sticky top-0 z-50 border-b border-white/5">
+        <div className="max-w-3xl mx-auto px-6 h-14 flex items-center">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-[#30d158] flex items-center justify-center">
+              <svg className="w-4 h-4 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <circle cx="5" cy="18" r="3" />
+                <circle cx="19" cy="18" r="3" />
+                <path d="M5 18l4-10h6l4 10M9 8l3-5 3 5" />
+              </svg>
             </div>
+            <span className="font-semibold text-[15px]">BikeFit</span>
           </div>
         </div>
       </header>
 
-      {/* Main Content */}
-      <section className="py-12 px-4 sm:px-6 lg:px-8">
-        <div className="max-w-4xl mx-auto">
+      {/* Main */}
+      <section className="flex-1 flex items-center justify-center px-6 py-12">
+        <div className="w-full max-w-2xl">
           {status === 'completed' && result ? (
             <ResultsViewer result={result} onReset={handleReset} />
           ) : (
-            <VideoUploader
-              status={status}
-              progress={progress}
-              error={error}
-              onUploadStart={() => { setStatus('uploading'); setProgress(0); setError(null); setResult(null) }}
-              onUploadProgress={(p) => setProgress(p * 0.3)}
-              onProcessingStart={() => { setStatus('processing'); setProgress(30) }}
-              onProcessingProgress={(p) => setProgress(30 + p * 0.7)}
-              onComplete={(data) => { setStatus('completed'); setProgress(100); setResult(data) }}
-              onError={(msg) => { setStatus('error'); setError(msg) }}
-            />
+            <div className="space-y-8">
+              {/* Hero text */}
+              {status === 'idle' && (
+                <div className="text-center animate-fade-in">
+                  <h1 className="text-4xl sm:text-5xl font-semibold tracking-tight">
+                    Bike Fit Analysis
+                  </h1>
+                  <p className="text-secondary text-lg mt-3 max-w-md mx-auto">
+                    Upload a side-view cycling video and get instant fit recommendations
+                  </p>
+                </div>
+              )}
+              
+              <VideoUploader
+                status={status}
+                progress={progress}
+                error={error}
+                onUploadStart={() => { setStatus('uploading'); setProgress(0); setError(null); setResult(null) }}
+                onUploadProgress={(p) => setProgress(p * 0.3)}
+                onProcessingStart={() => { setStatus('processing'); setProgress(30) }}
+                onProcessingProgress={(p) => setProgress(30 + p * 0.7)}
+                onComplete={(data) => { setStatus('completed'); setProgress(100); setResult(data) }}
+                onError={(msg) => { setStatus('error'); setError(msg) }}
+              />
+            </div>
           )}
         </div>
       </section>
