@@ -1,0 +1,24 @@
+% Explain the datasets utilized: what they contain, why they are utilized, assumptions, limitations, possible extensions.
+\subsection{Datasets}
+\label{subsec:datasets}
+
+\subsubsection{Seatpost Height}
+
+\subsubsection{Crankshaft Position Detection}
+We derived 
+
+For the crank angle augmentation method, we take high-confidence YOLOv8 points as approximate truth and fit our GP according to these data. We used videos of professional cyclists to tune the parameters of our model \cite{twoRiders, pogi, side1}. 
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.5\linewidth]{Chapters/experiment/crank_variance_side1.mp4.png}
+    \caption{Crank Angle GP}
+    \label{fig:crank-gp}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.5\linewidth]{tadej1.png}
+    \caption{Tadej Pogačar in the 2024 Tour De France}
+    \label{fig:placeholder}
+\end{figure}

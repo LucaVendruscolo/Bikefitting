@@ -1,0 +1,112 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Some custom packages
+%%
+\RequirePackage{amsmath}
+\RequirePackage{amssymb}
+\RequirePackage{xspace}
+
+
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Fonts (like different typewriter fonts etc.)
+%%
+%\RequirePackage[scaled=.87]{couriers}
+%\RequirePackage[T1]{fontenc}
+%\renewcommand\rmdefault{psb}
+
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Style (Changing the visual style of chapter headings and stuff.)
+%%
+\RequirePackage{titlesec}
+% [Fixes issue #34 (see https://github.com/cambridge/thesis/issues/34). Solution from: http://tex.stackexchange.com/questions/299969/titlesec-loss-of-section-numbering-with-the-new-update-2016-03-15
+\RequirePackage{etoolbox}
+\makeatletter
+\patchcmd{\ttlh@hang}{\parindent\z@}{\parindent\z@\leavevmode}{}{}
+\patchcmd{\ttlh@hang}{\noindent}{}{}{}
+\makeatother
+% end of issue #34 fix]
+\newcommand{\PreContentTitleFormat}{\titleformat{\chapter}[display]{\scshape\Large}
+{\Large\filleft\MakeUppercase{\chaptertitlename} \Huge\thechapter}
+{1ex}
+{}
+[\vspace{1ex}\titlerule]}
+\newcommand{\ContentTitleFormat}{\titleformat{\chapter}[display]{\scshape\huge}
+{\Large\filleft\MakeUppercase{\chaptertitlename} \Huge\thechapter}
+{1ex}
+{\titlerule\vspace{1ex}\filright}
+[\vspace{1ex}\titlerule]}
+\newcommand{\PostContentTitleFormat}{\PreContentTitleFormat}
+\PreContentTitleFormat
+
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Bibliography (special style etc.)
+%%
+\RequirePackage[numbers,sort&compress]{natbib}
+%\RequirePackage[numbers,compress]{natbib}
+
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Theorems, definitions, and examples
+%%
+\RequirePackage{amsthm}
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}[chapter]
+%% Support for `Examples` (provides a counter for examples, the possibility to
+%% label and reference them etc.)
+%%
+\newtheorem{example}{Example}[chapter]
+
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Captions: This makes captions of figures use a boldfaced small font. 
+%%
+\RequirePackage[small,bf]{caption}
+
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Subfigure (note: this must be included after the `caption` package). 
+%%
+\RequirePackage{subfig}
+
+
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Graphics (we set the central folder for all included graphics to
+%% `./Figures/`)
+%%
+\graphicspath{{./Figures/}}
+
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Content commands
+%%
+
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Glossary entries
+%%
+\newglossaryentry{pi}{
+    name={\ensuremath{\pi}},
+    sort={pi},
+    description={ratio of the circumference of a circle to the diameter}
+}

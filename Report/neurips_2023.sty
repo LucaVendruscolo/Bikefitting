@@ -1,0 +1,218 @@
+% neurips_2023.sty
+% NeurIPS 2023 style file
+% Based on the official NeurIPS LaTeX style
+
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{neurips_2023}[2023/05/01 NeurIPS 2023 submission/camera-ready style file]
+
+% Options
+\newif\if@neuripsfinal\@neuripsfinalfalse
+\newif\if@neuripspreprint\@neuripspreprintfalse
+\newif\if@neuripsnonatbib\@neuripsnonatbibfalse
+
+\DeclareOption{final}{\@neuripsfinaltrue}
+\DeclareOption{preprint}{\@neuripspreprinttrue}
+\DeclareOption{nonatbib}{\@neuripsnonatbibtrue}
+\ProcessOptions\relax
+
+% Fonts and encoding
+\RequirePackage[T1]{fontenc}
+\RequirePackage[utf8]{inputenc}
+\RequirePackage{times}
+
+% Page layout
+\RequirePackage[verbose=true,letterpaper]{geometry}
+\AtBeginDocument{
+  \newgeometry{
+    textheight=9in,
+    textwidth=5.5in,
+    top=1in,
+    headheight=12pt,
+    headsep=25pt,
+    footskip=30pt
+  }
+  \@ifpackageloaded{fullpage}{\PackageWarning{neurips_2023}{fullpage package not allowed! Resetting geometry.}}{}
+}
+
+% Line spacing
+\RequirePackage{setspace}
+\linespread{1}
+
+% Abstract
+\renewenvironment{abstract}%
+{%
+  \centerline{\large\bfseries Abstract}%
+  \vspace{0.5ex}%
+  \begin{quote}%
+}%
+{%
+  \par%
+  \end{quote}%
+  \vskip 1ex%
+}
+
+% Title and authors
+\def\@neuripsauthor{}
+\def\@neuripsaddress{}
+\def\@neuripsaffil{}
+
+\newcommand{\neuripsaddress}[1]{\gdef\@neuripsaddress{#1}}
+\newcommand{\neuripsaffil}[1]{\gdef\@neuripsaffil{#1}}
+
+% Author formatting for final version
+\if@neuripsfinal
+  \def\AND{%
+    \end{tabular}\hfil\linebreak[0]\hfil%
+    \begin{tabular}[t]{c}\bfseries%
+  }
+  \def\And{%
+    \end{tabular}\hfil\linebreak[4]\hfil%
+    \begin{tabular}[t]{c}\bfseries%
+  }
+\else
+  % For anonymous submission
+  \def\AND{\@gobble}
+  \def\And{\@gobble}
+\fi
+
+% Redefine maketitle
+\def\maketitle{%
+  \par
+  \begingroup
+    \def\thefootnote{\fnsymbol{footnote}}%
+    \def\@makefnmark{\hbox to 0pt{$^{\@thefnmark}$\hss}}%
+    \long\def\@makefntext##1{%
+      \parindent 1em\noindent
+      \hbox to 1.8em{\hss $\m@th ^{\@thefnmark}$}##1%
+    }%
+    \thispagestyle{empty}%
+    \@maketitle%
+    \@thanks%
+  \endgroup
+  \setcounter{footnote}{0}%
+  \let\maketitle\relax
+  \let\thanks\relax
+}
+
+\def\@maketitle{%
+  \vbox to 0pt{}%
+  \vskip -\headheight%
+  \vskip -\headsep%
+  \vskip 0.5in%
+  \vskip 0.4in minus 0.1in%
+  \begin{center}%
+    {\Large\bfseries \@title\par}%
+    \vskip 0.3in minus 0.1in%
+    \if@neuripsfinal%
+      \begin{tabular}[t]{c}\bfseries \@author\end{tabular}%
+    \else%
+      \if@neuripspreprint%
+        \begin{tabular}[t]{c}\bfseries \@author\end{tabular}%
+      \else%
+        {\large Anonymous Author(s)\\Affiliation\\Address\\email}%
+      \fi%
+    \fi%
+    \vskip 0.3in minus 0.1in%
+  \end{center}%
+}
+
+% Section formatting
+\RequirePackage{titlesec}
+
+\titleformat{\section}%
+  {\large\bfseries}%
+  {\thesection}%
+  {1em}%
+  {}%
+
+\titleformat{\subsection}%
+  {\normalsize\bfseries}%
+  {\thesubsection}%
+  {1em}%
+  {}%
+
+\titleformat{\subsubsection}%
+  {\normalsize\itshape}%
+  {\thesubsubsection}%
+  {1em}%
+  {}%
+
+\titlespacing*{\section}{0pt}{2.0ex plus 1ex minus 0.2ex}{1.5ex plus 0.2ex}
+\titlespacing*{\subsection}{0pt}{1.5ex plus 0.5ex minus 0.2ex}{1ex plus 0.2ex}
+\titlespacing*{\subsubsection}{0pt}{1ex plus 0.5ex minus 0.2ex}{0.5ex plus 0.2ex}
+
+% Paragraph formatting
+\setlength{\parindent}{1em}
+\setlength{\parskip}{0pt}
+
+% Float placement
+\renewcommand{\topfraction}{0.9}
+\renewcommand{\bottomfraction}{0.8}
+\setcounter{topnumber}{2}
+\setcounter{bottomnumber}{2}
+\setcounter{totalnumber}{4}
+\renewcommand{\textfraction}{0.07}
+\renewcommand{\floatpagefraction}{0.7}
+
+% Captions
+\RequirePackage[font=small,labelfont=bf]{caption}
+
+% Lists
+\RequirePackage{enumitem}
+\setlist{noitemsep,topsep=0pt,parsep=0pt,partopsep=0pt}
+
+% Footnotes
+\renewcommand{\footnoterule}{%
+  \kern -3pt
+  \hrule width 0.4\columnwidth
+  \kern 2.6pt
+}
+
+% Headers and footers
+\RequirePackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead{}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+% Bibliography
+\if@neuripsnonatbib\else
+  % natbib is loaded externally
+\fi
+
+% Hyperref coloring (loaded externally, these are suggestions)
+\AtBeginDocument{%
+  \@ifpackageloaded{hyperref}{%
+    \hypersetup{%
+      colorlinks=true,%
+      linkcolor=black,%
+      citecolor=black,%
+      urlcolor=blue%
+    }%
+  }{}%
+}
+
+% Math packages (commonly used with NeurIPS)
+\RequirePackage{amsmath}
+\RequirePackage{amssymb}
+\RequirePackage{mathtools}
+
+% Algorithm packages (commonly used)
+% These can be loaded by the user if needed
+
+% Acknowledgements (only in final version)
+\if@neuripsfinal
+  \newenvironment{ack}{%
+    \section*{Acknowledgments}%
+  }{}
+\else
+  \newenvironment{ack}{%
+    \section*{Acknowledgments (Hidden for Review)}%
+    \setbox0\vbox\bgroup%
+  }{\egroup}
+\fi
+
+\endinput
+
